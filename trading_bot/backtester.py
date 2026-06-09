@@ -61,10 +61,14 @@ def run_backtest(
 
     data["strategy_return"] = (data["position"] * data["daily_return"]) - data["trade_cost"]
     data["portfolio_value"] = initial_cash * (1 + data["strategy_return"]).cumprod()
-    data["buy_hold_value"] = initial_cash * (1 + data["daily_return"]).cumprod()
+    data["buy_hold_full_return"] = data["daily_return"]
+    data["buy_hold_same_exposure_return"] = exposure * data["daily_return"]
+    data["buy_hold_full_value"] = initial_cash * (1 + data["buy_hold_full_return"]).cumprod()
+    data["buy_hold_same_exposure_value"] = initial_cash * (1 + data["buy_hold_same_exposure_return"]).cumprod()
+    data["buy_hold_value"] = data["buy_hold_full_value"]
     data["trade"] = (data["position_change"] > 0).astype(int)
 
-    metrics = calculate_metrics(data=data, initial_cash=initial_cash)
+    metrics = calculate_metrics(data=data, initial_cash=initial_cash, exposure=exposure)
     return BacktestResult(
         strategy_name=strategy.name,
         display_name=strategy.display_name,
@@ -73,12 +77,14 @@ def run_backtest(
     )
 
 
-def calculate_metrics(data: pd.DataFrame, initial_cash: float) -> dict[str, float]:
+def calculate_metrics(data: pd.DataFrame, initial_cash: float, exposure: float) -> dict[str, float]:
     """Calculate practical comparison metrics."""
     ending_value = float(data["portfolio_value"].iloc[-1])
-    buy_hold_ending_value = float(data["buy_hold_value"].iloc[-1])
+    buy_hold_full_ending_value = float(data["buy_hold_full_value"].iloc[-1])
+    buy_hold_same_exposure_ending_value = float(data["buy_hold_same_exposure_value"].iloc[-1])
     total_return = (ending_value / initial_cash) - 1
-    buy_hold_return = (buy_hold_ending_value / initial_cash) - 1
+    buy_hold_full_return = (buy_hold_full_ending_value / initial_cash) - 1
+    buy_hold_same_exposure_return = (buy_hold_same_exposure_ending_value / initial_cash) - 1
 
     elapsed_days = max((data.index[-1] - data.index[0]).days, 1)
     years = elapsed_days / 365.25
@@ -92,10 +98,15 @@ def calculate_metrics(data: pd.DataFrame, initial_cash: float) -> dict[str, floa
     win_rate = float((trade_returns > 0).mean()) if not trade_returns.empty else 0.0
     average_trade_return = float(trade_returns.mean()) if not trade_returns.empty else 0.0
     time_in_market = float((data["position"] > 0).mean())
+    average_position = float(data["position"].mean())
+    missed_top_20_up_days = count_missed_top_up_days(data=data, top_days=20)
 
     return {
+        "exposure": exposure,
         "total_return": total_return,
-        "buy_hold_return": buy_hold_return,
+        "buy_hold_same_exposure_return": buy_hold_same_exposure_return,
+        "buy_hold_full_return": buy_hold_full_return,
+        "buy_hold_return": buy_hold_full_return,
         "cagr": cagr,
         "max_drawdown": max_drawdown,
         "sharpe": sharpe,
@@ -103,6 +114,8 @@ def calculate_metrics(data: pd.DataFrame, initial_cash: float) -> dict[str, floa
         "win_rate": win_rate,
         "average_trade_return": average_trade_return,
         "time_in_market": time_in_market,
+        "average_position": average_position,
+        "missed_top_20_up_days": float(missed_top_20_up_days),
         "final_value": ending_value,
     }
 
@@ -141,7 +154,19 @@ def calculate_closed_trade_returns(data: pd.DataFrame) -> pd.Series:
             trade_returns.append(cumulative_return - 1)
             in_trade = False
 
+    if in_trade:
+        trade_returns.append(cumulative_return - 1)
+
     return pd.Series(trade_returns, dtype=float)
+
+
+def count_missed_top_up_days(data: pd.DataFrame, top_days: int) -> int:
+    """Count top SPY up days where the strategy had zero exposure."""
+    if top_days <= 0 or data.empty:
+        return 0
+
+    top_up_days = data.sort_values("daily_return", ascending=False).head(top_days)
+    return int((top_up_days["position"] == 0).sum())
 
 
 def results_to_summary_frame(results: list[BacktestResult]) -> pd.DataFrame:
@@ -166,21 +191,39 @@ def print_summary_table(summary: pd.DataFrame, title: str) -> None:
 
     print(title)
     print("-" * len(title))
-    headers = ["strategy", "total_return", "cagr", "max_drawdown", "sharpe", "trades", "win_rate", "time_in_market"]
+    headers = [
+        "strategy",
+        "total_return",
+        "buy_hold_same_exposure_return",
+        "buy_hold_full_return",
+        "cagr",
+        "max_drawdown",
+        "sharpe",
+        "trades",
+        "win_rate",
+        "time_in_market",
+        "average_position",
+        "missed_top_20_up_days",
+    ]
     print(
-        f"{'Strategy':<16} {'Return':>10} {'CAGR':>10} {'Max DD':>10} "
-        f"{'Sharpe':>8} {'Trades':>8} {'Win%':>8} {'In Mkt':>8}"
+        f"{'Strategy':<16} {'Return':>10} {'B&H Same':>10} {'B&H Full':>10} "
+        f"{'CAGR':>10} {'Max DD':>10} {'Sharpe':>8} {'Trades':>8} "
+        f"{'Win%':>8} {'In Mkt':>8} {'Avg Pos':>8} {'Miss20':>7}"
     )
     for _, row in summary[headers].iterrows():
         print(
             f"{row['strategy']:<16} "
             f"{row['total_return']:>9.2%} "
+            f"{row['buy_hold_same_exposure_return']:>9.2%} "
+            f"{row['buy_hold_full_return']:>9.2%} "
             f"{row['cagr']:>9.2%} "
             f"{row['max_drawdown']:>9.2%} "
             f"{row['sharpe']:>8.2f} "
             f"{int(row['trades']):>8} "
             f"{row['win_rate']:>8.2%} "
-            f"{row['time_in_market']:>8.2%}"
+            f"{row['time_in_market']:>8.2%} "
+            f"{row['average_position']:>8.2%} "
+            f"{int(row['missed_top_20_up_days']):>7}"
         )
     print()
 
@@ -207,9 +250,18 @@ def plot_equity_curves(
         plt.plot(result.data.index, result.data["portfolio_value"], label=result.strategy_name)
 
     first_result = results[0]
+    benchmark_exposure = first_result.metrics["exposure"]
     plt.plot(
         first_result.data.index,
-        first_result.data["buy_hold_value"],
+        first_result.data["buy_hold_same_exposure_value"],
+        label=f"buy_hold_same_exposure_{benchmark_exposure:.0%}",
+        linestyle=":",
+        linewidth=2,
+        alpha=0.9,
+    )
+    plt.plot(
+        first_result.data.index,
+        first_result.data["buy_hold_full_value"],
         label="buy_hold_full_exposure",
         linestyle="--",
         alpha=0.7,

@@ -70,6 +70,7 @@ class RiskManager:
                 account=account,
                 position_qty=position_qty,
                 latest_close=decision.latest_close,
+                target_fraction=decision.target_fraction,
             )
 
         if decision.action == TradeAction.SELL:
@@ -77,7 +78,13 @@ class RiskManager:
 
         return RiskResult(approved=False, reason=f"Unsupported action: {decision.action.value}")
 
-    def _evaluate_buy(self, account, position_qty: float, latest_close: float) -> RiskResult:
+    def _evaluate_buy(
+        self,
+        account,
+        position_qty: float,
+        latest_close: float,
+        target_fraction: float,
+    ) -> RiskResult:
         if position_qty > 0:
             return RiskResult(
                 approved=False,
@@ -88,6 +95,7 @@ class RiskManager:
         cash = Decimal(str(account.cash))
         equity = Decimal(str(account.equity))
         latest_price = Decimal(str(latest_close))
+        strategy_target_fraction = Decimal(str(target_fraction))
 
         if buying_power <= 0:
             return RiskResult(approved=False, reason="Buying power is not positive.")
@@ -97,6 +105,12 @@ class RiskManager:
 
         if equity <= 0:
             return RiskResult(approved=False, reason="Account equity is not positive.")
+
+        if not Decimal("0") < strategy_target_fraction <= Decimal("1"):
+            return RiskResult(
+                approved=False,
+                reason=f"Strategy target fraction must be greater than 0 and no more than 1, got {target_fraction}.",
+            )
 
         # Buying power can include margin. Capping by cash enforces the no-leverage rule.
         usable_capital = min(buying_power, cash)
@@ -114,7 +128,7 @@ class RiskManager:
                 ),
             )
 
-        notional = min(trade_notional_cap, remaining_position_capacity)
+        notional = min(trade_notional_cap, remaining_position_capacity) * strategy_target_fraction
 
         if self.settings.trial_mode:
             trial_cap = Decimal(str(self.settings.trial_max_notional))
@@ -138,6 +152,7 @@ class RiskManager:
             max_position_value,
         )
         self.logger.info("Risk: remaining SPY position capacity = $%.2f", remaining_position_capacity)
+        self.logger.info("Risk: strategy target fraction = %.0f%%", strategy_target_fraction * 100)
         self.logger.info("Risk: approved buy notional after all caps = $%s", notional)
 
         if notional < Decimal(str(self.settings.min_order_notional)):

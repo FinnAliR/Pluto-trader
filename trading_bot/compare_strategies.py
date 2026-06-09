@@ -168,7 +168,7 @@ def parse_args() -> argparse.Namespace:
         "--strategies",
         nargs="+",
         default=available_strategy_names(),
-        help="Strategies to compare. Choices: ma_crossover rsi breakout buy_and_hold.",
+        help="Strategies to compare. Choices: ma_crossover core_tactical_ma rebound_reentry_ma rsi breakout buy_and_hold.",
     )
     parser.add_argument(
         "--start",

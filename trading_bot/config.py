@@ -29,6 +29,10 @@ class Settings:
     data_feed: str
     fast_ma_period: int
     slow_ma_period: int
+    core_tactical_core_fraction: float
+    rebound_ma_period: int
+    rebound_return_days: int
+    rebound_min_return: float
     rsi_period: int
     rsi_buy_level: float
     rsi_sell_level: float
@@ -79,6 +83,10 @@ def load_settings() -> Settings:
         data_feed=os.getenv("DATA_FEED", "iex").strip().lower(),
         fast_ma_period=_int_env("FAST_MA_PERIOD", 20),
         slow_ma_period=_int_env("SLOW_MA_PERIOD", 50),
+        core_tactical_core_fraction=_float_env("CORE_TACTICAL_CORE_FRACTION", 0.40),
+        rebound_ma_period=_int_env("REBOUND_MA_PERIOD", 10),
+        rebound_return_days=_int_env("REBOUND_RETURN_DAYS", 3),
+        rebound_min_return=_float_env("REBOUND_MIN_RETURN", 0.0),
         rsi_period=_int_env("RSI_PERIOD", 14),
         rsi_buy_level=_float_env("RSI_BUY_LEVEL", 30.0),
         rsi_sell_level=_float_env("RSI_SELL_LEVEL", 70.0),
@@ -169,10 +177,26 @@ def _normalize_strategy_name(value: str) -> str:
         "breakout": "breakout",
         "buy_hold": "buy_and_hold",
         "buy_and_hold": "buy_and_hold",
+        "core": "core_tactical_ma",
+        "core_tactical": "core_tactical_ma",
+        "core_tactical_ma": "core_tactical_ma",
+        "rebound": "rebound_reentry_ma",
+        "rebound_ma": "rebound_reentry_ma",
+        "rebound_reentry": "rebound_reentry_ma",
+        "rebound_reentry_ma": "rebound_reentry_ma",
     }
 
     if normalized not in aliases:
-        allowed = ", ".join(["ma_crossover", "rsi", "breakout", "buy_and_hold"])
+        allowed = ", ".join(
+            [
+                "ma_crossover",
+                "core_tactical_ma",
+                "rebound_reentry_ma",
+                "rsi",
+                "breakout",
+                "buy_and_hold",
+            ]
+        )
         raise SettingsError(f"STRATEGY must be one of: {allowed}.")
 
     return aliases[normalized]
@@ -187,6 +211,15 @@ def _validate_settings(settings: Settings) -> None:
 
     if settings.fast_ma_period >= settings.slow_ma_period:
         raise SettingsError("FAST_MA_PERIOD must be smaller than SLOW_MA_PERIOD.")
+
+    if not 0 < settings.core_tactical_core_fraction < 1:
+        raise SettingsError("CORE_TACTICAL_CORE_FRACTION must be greater than 0 and less than 1.")
+
+    if settings.rebound_ma_period <= 1:
+        raise SettingsError("REBOUND_MA_PERIOD must be greater than 1.")
+
+    if settings.rebound_return_days < 1:
+        raise SettingsError("REBOUND_RETURN_DAYS must be at least 1.")
 
     if settings.rsi_period <= 1:
         raise SettingsError("RSI_PERIOD must be greater than 1.")

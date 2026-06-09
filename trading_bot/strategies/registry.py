@@ -5,7 +5,9 @@ from __future__ import annotations
 from .base import Strategy
 from .breakout import BreakoutStrategy
 from .buy_and_hold import BuyAndHoldStrategy
+from .core_tactical_ma import CoreTacticalMovingAverageStrategy
 from .ma_crossover import MovingAverageCrossoverStrategy
+from .rebound_reentry_ma import ReboundReentryMovingAverageStrategy
 from .rsi_strategy import RsiStrategy
 
 
@@ -17,12 +19,26 @@ ALIASES = {
     "breakout": "breakout",
     "buy_hold": "buy_and_hold",
     "buy_and_hold": "buy_and_hold",
+    "core": "core_tactical_ma",
+    "core_tactical": "core_tactical_ma",
+    "core_tactical_ma": "core_tactical_ma",
+    "rebound": "rebound_reentry_ma",
+    "rebound_ma": "rebound_reentry_ma",
+    "rebound_reentry": "rebound_reentry_ma",
+    "rebound_reentry_ma": "rebound_reentry_ma",
 }
 
 
 def available_strategy_names() -> list[str]:
     """Return canonical strategy names."""
-    return ["ma_crossover", "rsi", "breakout", "buy_and_hold"]
+    return [
+        "ma_crossover",
+        "core_tactical_ma",
+        "rebound_reentry_ma",
+        "rsi",
+        "breakout",
+        "buy_and_hold",
+    ]
 
 
 def normalize_strategy_name(name: str) -> str:
@@ -48,6 +64,30 @@ def create_strategy(name: str, settings=None) -> Strategy:
         fast_period = getattr(settings, "fast_ma_period", 20)
         slow_period = getattr(settings, "slow_ma_period", 50)
         return MovingAverageCrossoverStrategy(fast_period=fast_period, slow_period=slow_period)
+
+    if normalized == "core_tactical_ma":
+        fast_period = getattr(settings, "fast_ma_period", 20)
+        slow_period = getattr(settings, "slow_ma_period", 50)
+        core_fraction = getattr(settings, "core_tactical_core_fraction", 0.40)
+        return CoreTacticalMovingAverageStrategy(
+            fast_period=fast_period,
+            slow_period=slow_period,
+            core_fraction=core_fraction,
+        )
+
+    if normalized == "rebound_reentry_ma":
+        fast_period = getattr(settings, "fast_ma_period", 20)
+        slow_period = getattr(settings, "slow_ma_period", 50)
+        rebound_ma_period = getattr(settings, "rebound_ma_period", 10)
+        rebound_return_days = getattr(settings, "rebound_return_days", 3)
+        rebound_min_return = getattr(settings, "rebound_min_return", 0.0)
+        return ReboundReentryMovingAverageStrategy(
+            fast_period=fast_period,
+            slow_period=slow_period,
+            rebound_ma_period=rebound_ma_period,
+            rebound_return_days=rebound_return_days,
+            rebound_min_return=rebound_min_return,
+        )
 
     if normalized == "rsi":
         period = getattr(settings, "rsi_period", 14)

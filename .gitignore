@@ -14,6 +14,7 @@ venv/
 trading_bot/backtest_portfolio_value.png
 trading_bot/backtest_equity_curves.png
 trading_bot/backtest_results.csv
+trading_bot/trade_analysis_*.csv
 
 # Local trading audit log
 trading_bot/trades.csv

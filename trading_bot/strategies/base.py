@@ -29,6 +29,7 @@ class StrategyDecision:
     slow_ma: float | None = None
     indicator_name: str = ""
     indicator_value: float | None = None
+    target_fraction: float = 1.0
 
 
 class Strategy(ABC):
@@ -39,10 +40,11 @@ class Strategy(ABC):
 
     @abstractmethod
     def generate_signals(self, price_data: pd.DataFrame) -> pd.Series:
-        """Return a 0/1 target-position series.
+        """Return a target-position series from 0.0 to 1.0.
 
-        1 means the strategy wants to own SPY.
-        0 means the strategy wants to be in cash.
+        1.0 means use the full configured exposure.
+        0.0 means stay in cash.
+        Fractional values allow core/tactical strategies, for example 0.4.
         """
 
     @abstractmethod

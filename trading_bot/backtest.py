@@ -77,7 +77,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--strategy",
         default=os.getenv("STRATEGY", "ma_crossover"),
-        help="Strategy to test: ma_crossover, rsi, breakout, buy_and_hold.",
+        help="Strategy to test: ma_crossover, core_tactical_ma, rebound_reentry_ma, rsi, breakout, buy_and_hold.",
     )
     parser.add_argument(
         "--start",
