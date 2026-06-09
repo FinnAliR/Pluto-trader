@@ -12,3 +12,6 @@ venv/
 
 # Backtest output
 trading_bot/backtest_portfolio_value.png
+
+# Local trading audit log
+trading_bot/trades.csv

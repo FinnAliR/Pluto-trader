@@ -4,11 +4,17 @@ from __future__ import annotations
 
 from logging import Logger
 
+from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, QueryOrderStatus, TimeInForce
 from alpaca.trading.requests import GetOrdersRequest, MarketOrderRequest
+from requests.exceptions import RequestException
 
 from config import Settings
+
+
+class BrokerError(RuntimeError):
+    """Raised when Alpaca trading API calls fail."""
 
 
 class AlpacaBroker:
@@ -32,7 +38,11 @@ class AlpacaBroker:
 
     def get_account(self):
         """Fetch account details and log key safety fields."""
-        account = self.client.get_account()
+        try:
+            account = self.client.get_account()
+        except (APIError, RequestException) as error:
+            raise BrokerError(f"Failed to fetch Alpaca account details: {error}") from error
+
         self.logger.info("Account status: %s", account.status)
         self.logger.info("Account trading blocked: %s", account.trading_blocked)
         self.logger.info("Buying power: %s", account.buying_power)
@@ -41,7 +51,11 @@ class AlpacaBroker:
 
     def is_market_open(self) -> bool:
         """Return True only when Alpaca says the market is open."""
-        clock = self.client.get_clock()
+        try:
+            clock = self.client.get_clock()
+        except (APIError, RequestException) as error:
+            raise BrokerError(f"Failed to fetch Alpaca market clock: {error}") from error
+
         self.logger.info("Market timestamp: %s", clock.timestamp)
         self.logger.info("Market is open: %s", clock.is_open)
         self.logger.info("Next market open: %s", clock.next_open)
@@ -50,7 +64,10 @@ class AlpacaBroker:
 
     def get_position_qty(self, symbol: str) -> float:
         """Return the current long quantity for a symbol, or 0 if not held."""
-        positions = self.client.get_all_positions()
+        try:
+            positions = self.client.get_all_positions()
+        except (APIError, RequestException) as error:
+            raise BrokerError(f"Failed to fetch Alpaca positions: {error}") from error
 
         for position in positions:
             if position.symbol.upper() == symbol.upper():
@@ -65,7 +82,10 @@ class AlpacaBroker:
             symbols=[symbol],
             limit=50,
         )
-        open_orders = self.client.get_orders(filter=request)
+        try:
+            open_orders = self.client.get_orders(filter=request)
+        except (APIError, RequestException) as error:
+            raise BrokerError(f"Failed to fetch Alpaca open orders: {error}") from error
 
         if open_orders:
             for order in open_orders:
@@ -99,8 +119,19 @@ class AlpacaBroker:
             extended_hours=False,
             client_order_id=client_order_id,
         )
-        order = self.client.submit_order(order_data=order_request)
-        self.logger.info("Submitted paper buy order: id=%s status=%s", order.id, order.status)
+        try:
+            order = self.client.submit_order(order_data=order_request)
+        except (APIError, RequestException) as error:
+            raise BrokerError(f"Failed to submit paper buy order: {error}") from error
+
+        self.logger.info(
+            "ORDER CONFIRMATION: paper BUY submitted. id=%s client_order_id=%s status=%s symbol=%s notional=%.2f",
+            order.id,
+            client_order_id,
+            order.status,
+            symbol,
+            notional,
+        )
         return order
 
     def submit_market_sell(self, symbol: str, qty: float, client_order_id: str):
@@ -121,8 +152,19 @@ class AlpacaBroker:
             extended_hours=False,
             client_order_id=client_order_id,
         )
-        order = self.client.submit_order(order_data=order_request)
-        self.logger.info("Submitted paper sell order: id=%s status=%s", order.id, order.status)
+        try:
+            order = self.client.submit_order(order_data=order_request)
+        except (APIError, RequestException) as error:
+            raise BrokerError(f"Failed to submit paper sell order: {error}") from error
+
+        self.logger.info(
+            "ORDER CONFIRMATION: paper SELL submitted. id=%s client_order_id=%s status=%s symbol=%s qty=%.6f",
+            order.id,
+            client_order_id,
+            order.status,
+            symbol,
+            qty,
+        )
         return order
 
     def _validate_symbol(self, symbol: str) -> None:

@@ -29,9 +29,12 @@ class Settings:
     fast_ma_period: int
     slow_ma_period: int
     buying_power_fraction: float
+    max_daily_trades: int
+    max_position_size_fraction: float
     lookback_days: int
     min_order_notional: float
     client_order_id_prefix: str
+    trades_csv_path: Path
     log_level: str
 
 
@@ -47,11 +50,20 @@ def load_settings() -> Settings:
     api_key = _required_env("ALPACA_API_KEY")
     secret_key = _required_env("ALPACA_SECRET_KEY")
 
-    paper_value = os.getenv("ALPACA_PAPER", "true").strip().lower()
-    if paper_value not in TRUE_VALUES:
+    paper_trading_value = os.getenv("PAPER_TRADING", "").strip().lower()
+    alpaca_paper_value = os.getenv("ALPACA_PAPER", "").strip().lower()
+
+    if paper_trading_value not in TRUE_VALUES:
         raise SettingsError(
-            "This bot only supports Alpaca paper trading. Set ALPACA_PAPER=true."
+            "This bot only supports paper trading. Set PAPER_TRADING=true in your .env file."
         )
+
+    if alpaca_paper_value not in TRUE_VALUES:
+        raise SettingsError(
+            "This bot only supports Alpaca paper trading. Set ALPACA_PAPER=true in your .env file."
+        )
+
+    bot_dir = Path(__file__).resolve().parent
 
     settings = Settings(
         api_key=api_key,
@@ -63,9 +75,12 @@ def load_settings() -> Settings:
         fast_ma_period=_int_env("FAST_MA_PERIOD", 20),
         slow_ma_period=_int_env("SLOW_MA_PERIOD", 50),
         buying_power_fraction=_float_env("BUYING_POWER_FRACTION", 0.25),
+        max_daily_trades=_int_env("MAX_DAILY_TRADES", 1),
+        max_position_size_fraction=_float_env("MAX_POSITION_SIZE_FRACTION", 0.25),
         lookback_days=_int_env("LOOKBACK_DAYS", 220),
         min_order_notional=_float_env("MIN_ORDER_NOTIONAL", 1.00),
         client_order_id_prefix=os.getenv("CLIENT_ORDER_ID_PREFIX", "pluto-mac").strip(),
+        trades_csv_path=_path_env("TRADES_CSV", bot_dir / "trades.csv", bot_dir),
         log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
     )
 
@@ -102,6 +117,17 @@ def _float_env(name: str, default: float) -> float:
         raise SettingsError(f"{name} must be a number.") from error
 
 
+def _path_env(name: str, default: Path, base_dir: Path) -> Path:
+    raw_value = os.getenv(name)
+    if raw_value is None or not raw_value.strip():
+        return default
+
+    path = Path(raw_value.strip())
+    if not path.is_absolute():
+        path = base_dir / path
+    return path
+
+
 def _normalize_timeframe(value: str) -> str:
     normalized = value.strip().lower()
 
@@ -126,6 +152,12 @@ def _validate_settings(settings: Settings) -> None:
 
     if not 0 < settings.buying_power_fraction <= 0.25:
         raise SettingsError("BUYING_POWER_FRACTION must be greater than 0 and no more than 0.25.")
+
+    if settings.max_daily_trades < 1:
+        raise SettingsError("MAX_DAILY_TRADES must be at least 1.")
+
+    if not 0 < settings.max_position_size_fraction <= 0.25:
+        raise SettingsError("MAX_POSITION_SIZE_FRACTION must be greater than 0 and no more than 0.25.")
 
     if settings.lookback_days < 60:
         raise SettingsError("LOOKBACK_DAYS must be at least 60 for the 50-period average.")

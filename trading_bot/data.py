@@ -6,12 +6,18 @@ from datetime import datetime, timedelta, timezone
 from logging import Logger
 
 import pandas as pd
+from alpaca.common.exceptions import APIError
 from alpaca.data.enums import Adjustment, DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+from requests.exceptions import RequestException
 
 from config import Settings, SettingsError
+
+
+class MarketDataError(RuntimeError):
+    """Raised when Alpaca market data API calls fail."""
 
 
 def create_data_client(settings: Settings) -> StockHistoricalDataClient:
@@ -49,7 +55,11 @@ def get_price_data(
         adjustment=Adjustment.ALL,
     )
 
-    bars = data_client.get_stock_bars(request)
+    try:
+        bars = data_client.get_stock_bars(request)
+    except (APIError, RequestException) as error:
+        raise MarketDataError(f"Failed to fetch Alpaca price data: {error}") from error
+
     data_frame = bars.df
 
     if data_frame is None or data_frame.empty:
