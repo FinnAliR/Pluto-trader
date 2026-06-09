@@ -115,6 +115,15 @@ class RiskManager:
             )
 
         notional = min(trade_notional_cap, remaining_position_capacity)
+
+        if self.settings.trial_mode:
+            trial_cap = Decimal(str(self.settings.trial_max_notional))
+            notional = min(notional, trial_cap)
+            self.logger.warning(
+                "TRIAL MODE: buy notional capped at $%.2f before order submission.",
+                trial_cap,
+            )
+
         notional = notional.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
 
         self.logger.info("Risk: buying power=%s cash=%s usable capital=%s", buying_power, cash, usable_capital)

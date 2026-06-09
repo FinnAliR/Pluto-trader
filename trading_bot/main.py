@@ -9,7 +9,8 @@ from config import SettingsError, load_settings
 from data import MarketDataError, create_data_client, get_price_data
 from logger import setup_logger
 from risk import RiskManager
-from strategy import TradeAction, calculate_moving_average_signal
+from strategies.base import TradeAction
+from strategies.registry import create_strategy
 from trade_log import TradeLogEntry, TradeLogger
 
 
@@ -28,14 +29,18 @@ def run_bot() -> int:
         return 1
 
     logger = setup_logger(settings.log_level)
-    logger.info("Starting SPY moving-average bot.")
+    strategy = create_strategy(settings.strategy_name, settings=settings)
+
+    logger.info("Starting SPY paper trading bot.")
     logger.info("Safety check: paper trading is hard-coded ON. Live trading is not supported.")
-    logger.info("Configured symbol=%s timeframe=%s", settings.symbol, settings.timeframe)
+    logger.info("Configured symbol=%s timeframe=%s strategy=%s", settings.symbol, settings.timeframe, strategy.display_name)
     logger.info(
         "Configured risk limits: max_daily_trades=%d max_position_size=%.0f%% of equity",
         settings.max_daily_trades,
         settings.max_position_size_fraction * 100,
     )
+    if settings.trial_mode:
+        logger.warning("TRIAL MODE is ON: buy orders are capped at $%.2f.", settings.trial_max_notional)
 
     broker = AlpacaBroker(settings=settings, logger=logger)
     data_client = create_data_client(settings=settings)
@@ -68,10 +73,9 @@ def run_bot() -> int:
         logger.error("Alpaca market data API error: %s", error)
         return 1
 
-    decision = calculate_moving_average_signal(
+    decision = strategy.make_decision(
         price_data=price_data,
         owns_position=owns_position,
-        settings=settings,
         logger=logger,
     )
 
@@ -81,12 +85,19 @@ def run_bot() -> int:
         logger.info("Decision: no order needed.")
         return 0
 
+    submitted_trades_today = trade_logger.count_submitted_trades_today()
+    logger.info(
+        "Submitted trades today from trades.csv: %d/%d",
+        submitted_trades_today,
+        settings.max_daily_trades,
+    )
+
     risk_result = risk_manager.evaluate(
         decision=decision,
         account=account,
         position_qty=position_qty,
         has_open_order=has_open_order,
-        submitted_trades_today=trade_logger.count_submitted_trades_today(),
+        submitted_trades_today=submitted_trades_today,
     )
 
     if not risk_result.approved:
