@@ -11,6 +11,11 @@ from config import Settings
 from strategy import StrategyDecision, TradeAction
 
 
+CENT = Decimal("0.01")
+SHARE_QUANTITY = Decimal("0.000001")
+MAX_CLIENT_ORDER_ID_LENGTH = 48
+
+
 @dataclass(frozen=True)
 class RiskResult:
     """Final risk approval or rejection."""
@@ -74,7 +79,12 @@ class RiskManager:
             )
 
         if decision.action == TradeAction.SELL:
-            return self._evaluate_sell(position_qty=position_qty)
+            return self._evaluate_sell(
+                account=account,
+                position_qty=position_qty,
+                latest_close=decision.latest_close,
+                target_fraction=decision.target_fraction,
+            )
 
         return RiskResult(approved=False, reason=f"Unsupported action: {decision.action.value}")
 
@@ -83,19 +93,23 @@ class RiskManager:
         account,
         position_qty: float,
         latest_close: float,
-        target_fraction: float,
+        target_fraction: float | None,
     ) -> RiskResult:
-        if position_qty > 0:
+        try:
+            strategy_target_fraction = _target_fraction_or_default(target_fraction, default=1.0)
+        except ValueError as error:
+            return RiskResult(approved=False, reason=str(error))
+
+        if strategy_target_fraction <= 0:
             return RiskResult(
                 approved=False,
-                reason="SPY is already held. Only one open SPY position is allowed.",
+                reason="Buy target fraction is 0%, so no buy is needed.",
             )
 
         buying_power = Decimal(str(account.buying_power))
         cash = Decimal(str(account.cash))
         equity = Decimal(str(account.equity))
         latest_price = Decimal(str(latest_close))
-        strategy_target_fraction = Decimal(str(target_fraction))
 
         if buying_power <= 0:
             return RiskResult(approved=False, reason="Buying power is not positive.")
@@ -106,29 +120,24 @@ class RiskManager:
         if equity <= 0:
             return RiskResult(approved=False, reason="Account equity is not positive.")
 
-        if not Decimal("0") < strategy_target_fraction <= Decimal("1"):
-            return RiskResult(
-                approved=False,
-                reason=f"Strategy target fraction must be greater than 0 and no more than 1, got {target_fraction}.",
-            )
-
         # Buying power can include margin. Capping by cash enforces the no-leverage rule.
         usable_capital = min(buying_power, cash)
         trade_notional_cap = usable_capital * Decimal(str(self.settings.buying_power_fraction))
         max_position_value = equity * Decimal(str(self.settings.max_position_size_fraction))
+        target_position_value = max_position_value * strategy_target_fraction
         current_position_value = Decimal(str(position_qty)) * latest_price
-        remaining_position_capacity = max_position_value - current_position_value
+        notional_needed = target_position_value - current_position_value
 
-        if remaining_position_capacity <= 0:
+        if notional_needed <= 0:
             return RiskResult(
                 approved=False,
                 reason=(
-                    f"Max position size reached. Current SPY value ${current_position_value:.2f} "
-                    f"is at or above limit ${max_position_value:.2f}."
+                    f"Target SPY allocation already reached. Current SPY value ${current_position_value:.2f} "
+                    f"is at or above target ${target_position_value:.2f}."
                 ),
             )
 
-        notional = min(trade_notional_cap, remaining_position_capacity) * strategy_target_fraction
+        notional = min(trade_notional_cap, notional_needed)
 
         if self.settings.trial_mode:
             trial_cap = Decimal(str(self.settings.trial_max_notional))
@@ -138,7 +147,7 @@ class RiskManager:
                 trial_cap,
             )
 
-        notional = notional.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+        notional = notional.quantize(CENT, rounding=ROUND_DOWN)
 
         self.logger.info("Risk: buying power=%s cash=%s usable capital=%s", buying_power, cash, usable_capital)
         self.logger.info(
@@ -151,8 +160,10 @@ class RiskManager:
             self.settings.max_position_size_fraction * 100,
             max_position_value,
         )
-        self.logger.info("Risk: remaining SPY position capacity = $%.2f", remaining_position_capacity)
         self.logger.info("Risk: strategy target fraction = %.0f%%", strategy_target_fraction * 100)
+        self.logger.info("Risk: target SPY position value = $%.2f", target_position_value)
+        self.logger.info("Risk: current SPY position value = $%.2f", current_position_value)
+        self.logger.info("Risk: buy notional needed to reach target = $%.2f", notional_needed)
         self.logger.info("Risk: approved buy notional after all caps = $%s", notional)
 
         if notional < Decimal(str(self.settings.min_order_notional)):
@@ -171,21 +182,98 @@ class RiskManager:
             client_order_id=self._client_order_id(TradeAction.BUY),
         )
 
-    def _evaluate_sell(self, position_qty: float) -> RiskResult:
+    def _evaluate_sell(
+        self,
+        account,
+        position_qty: float,
+        latest_close: float,
+        target_fraction: float | None,
+    ) -> RiskResult:
         if position_qty <= 0:
             return RiskResult(
                 approved=False,
                 reason="No SPY position is held. Sell is blocked to prevent shorting.",
             )
 
+        try:
+            strategy_target_fraction = _target_fraction_or_default(target_fraction, default=0.0)
+        except ValueError as error:
+            return RiskResult(approved=False, reason=str(error))
+
+        equity = Decimal(str(account.equity))
+        latest_price = Decimal(str(latest_close))
+        current_qty = Decimal(str(position_qty))
+
+        if equity <= 0:
+            return RiskResult(approved=False, reason="Account equity is not positive.")
+
+        max_position_value = equity * Decimal(str(self.settings.max_position_size_fraction))
+        target_position_value = max_position_value * strategy_target_fraction
+        current_position_value = current_qty * latest_price
+
+        if strategy_target_fraction == 0:
+            qty = current_qty.quantize(SHARE_QUANTITY, rounding=ROUND_DOWN)
+            self.logger.info("Risk: full exit requested, approved sell quantity = %s", qty)
+        else:
+            notional_to_sell = current_position_value - target_position_value
+            if notional_to_sell <= 0:
+                return RiskResult(
+                    approved=False,
+                    reason=(
+                        f"Target SPY allocation already reached. Current SPY value ${current_position_value:.2f} "
+                        f"is at or below target ${target_position_value:.2f}."
+                    ),
+                )
+
+            qty = min(current_qty, notional_to_sell / latest_price)
+            qty = qty.quantize(SHARE_QUANTITY, rounding=ROUND_DOWN)
+
+            if qty <= 0:
+                return RiskResult(approved=False, reason="Calculated sell quantity rounds down to zero.")
+
+            sell_notional = qty * latest_price
+            if sell_notional < Decimal(str(self.settings.min_order_notional)):
+                return RiskResult(
+                    approved=False,
+                    reason=(
+                        f"Rebalance sell value ${sell_notional:.2f} is below minimum "
+                        f"${self.settings.min_order_notional:.2f}."
+                    ),
+                )
+
+            self.logger.info("Risk: strategy target fraction = %.0f%%", strategy_target_fraction * 100)
+            self.logger.info("Risk: target SPY position value = $%.2f", target_position_value)
+            self.logger.info("Risk: current SPY position value = $%.2f", current_position_value)
+            self.logger.info("Risk: sell notional needed to reach target = $%.2f", notional_to_sell)
+            self.logger.info("Risk: approved sell quantity after rounding = %s", qty)
+
         return RiskResult(
             approved=True,
             reason="Sell risk checks passed.",
-            qty=position_qty,
+            qty=float(qty),
             client_order_id=self._client_order_id(TradeAction.SELL),
         )
 
     def _client_order_id(self, action: TradeAction) -> str:
-        today = datetime.now(timezone.utc).strftime("%Y%m%d")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
         timeframe = self.settings.timeframe.lower().replace(" ", "")
-        return f"{self.settings.client_order_id_prefix}-{self.settings.symbol.lower()}-{action.value.lower()}-{timeframe}-{today}"
+        suffix = f"{self.settings.symbol.lower()}-{action.value.lower()}-{timeframe}-{timestamp}"
+        prefix_length = MAX_CLIENT_ORDER_ID_LENGTH - len(suffix) - 1
+        prefix = self.settings.client_order_id_prefix[: max(prefix_length, 0)].strip("-")
+
+        if not prefix:
+            return suffix[:MAX_CLIENT_ORDER_ID_LENGTH]
+
+        return f"{prefix}-{suffix}"[:MAX_CLIENT_ORDER_ID_LENGTH]
+
+
+def _target_fraction_or_default(value: float | None, default: float) -> Decimal:
+    raw_value = default if value is None else value
+    target_fraction = Decimal(str(raw_value))
+
+    if not Decimal("0") <= target_fraction <= Decimal("1"):
+        raise ValueError(
+            f"Strategy target fraction must be between 0 and 1, got {raw_value}."
+        )
+
+    return target_fraction

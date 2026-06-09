@@ -67,8 +67,14 @@ class CoreTacticalMovingAverageStrategy(Strategy):
                 )
             return StrategyDecision(
                 action=TradeAction.HOLD,
-                reason=f"Need at least {self.slow_period} close prices, got {len(close_prices)}.",
+                reason=(
+                    f"Need at least {self.slow_period} close prices, got {len(close_prices)}. "
+                    f"Maintaining the {self.core_fraction:.0%} core allocation target."
+                ),
                 latest_close=latest_close,
+                indicator_name="target_fraction",
+                indicator_value=self.core_fraction,
+                target_fraction=self.core_fraction,
             )
 
         latest_close = float(close_prices.iloc[-1])
@@ -97,10 +103,7 @@ class CoreTacticalMovingAverageStrategy(Strategy):
 
         return StrategyDecision(
             action=TradeAction.HOLD,
-            reason=(
-                "Core tactical strategy already has a SPY position. "
-                "This live bot does not rebalance partial target changes yet."
-            ),
+            reason="Core tactical target is active; live bot will rebalance if current exposure is off target.",
             latest_close=latest_close,
             fast_ma=fast_ma,
             slow_ma=slow_ma,

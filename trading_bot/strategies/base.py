@@ -20,7 +20,11 @@ class TradeAction(str, Enum):
 
 @dataclass(frozen=True)
 class StrategyDecision:
-    """The strategy output passed to risk checks."""
+    """The strategy output passed to risk checks.
+
+    target_fraction is the desired final SPY exposure as a fraction of the
+    configured max position size. None means use the action default.
+    """
 
     action: TradeAction
     reason: str
@@ -29,7 +33,7 @@ class StrategyDecision:
     slow_ma: float | None = None
     indicator_name: str = ""
     indicator_value: float | None = None
-    target_fraction: float = 1.0
+    target_fraction: float | None = None
 
 
 class Strategy(ABC):

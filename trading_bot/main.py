@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
+from decimal import Decimal
 
 from broker import AlpacaBroker, BrokerError
 from config import SettingsError, load_settings
 from data import MarketDataError, create_data_client, get_price_data
 from logger import setup_logger
 from risk import RiskManager
-from strategies.base import TradeAction
+from strategies.base import StrategyDecision, TradeAction
 from strategies.registry import create_strategy
 from trade_log import TradeLogEntry, TradeLogger
 
@@ -78,6 +80,13 @@ def run_bot() -> int:
         owns_position=owns_position,
         logger=logger,
     )
+    decision = resolve_target_rebalance_decision(
+        decision=decision,
+        account=account,
+        position_qty=position_qty,
+        settings=settings,
+        logger=logger,
+    )
 
     logger.info("Strategy decision: %s. Reason: %s", decision.action.value, decision.reason)
 
@@ -85,9 +94,18 @@ def run_bot() -> int:
         logger.info("Decision: no order needed.")
         return 0
 
-    submitted_trades_today = trade_logger.count_submitted_trades_today()
+    local_trades_today = trade_logger.count_submitted_trades_today()
+    try:
+        alpaca_orders_today = broker.count_orders_submitted_today(settings.symbol)
+    except BrokerError as error:
+        logger.error("Alpaca order-history check failed: %s", error)
+        return 1
+
+    submitted_trades_today = max(local_trades_today, alpaca_orders_today)
     logger.info(
-        "Submitted trades today from trades.csv: %d/%d",
+        "Submitted trades today: local_csv=%d alpaca=%d effective=%d/%d",
+        local_trades_today,
+        alpaca_orders_today,
         submitted_trades_today,
         settings.max_daily_trades,
     )
@@ -174,6 +192,68 @@ def run_bot() -> int:
 
     logger.info("Decision: unsupported action %s, so no order was placed.", decision.action.value)
     return 0
+
+
+def resolve_target_rebalance_decision(
+    decision: StrategyDecision,
+    account,
+    position_qty: float,
+    settings,
+    logger,
+) -> StrategyDecision:
+    """Turn a target-aware HOLD into a BUY or SELL rebalance when needed."""
+    if decision.action != TradeAction.HOLD:
+        return decision
+
+    if decision.target_fraction is None:
+        return decision
+
+    if decision.latest_close is None or decision.latest_close <= 0:
+        return decision
+
+    target_fraction = Decimal(str(decision.target_fraction))
+    if not Decimal("0") <= target_fraction <= Decimal("1"):
+        return decision
+
+    latest_price = Decimal(str(decision.latest_close))
+    equity = Decimal(str(account.equity))
+    if equity <= 0:
+        return decision
+
+    max_position_value = equity * Decimal(str(settings.max_position_size_fraction))
+    target_position_value = max_position_value * target_fraction
+    current_position_value = Decimal(str(position_qty)) * latest_price
+    value_gap = target_position_value - current_position_value
+    min_order_notional = Decimal(str(settings.min_order_notional))
+
+    logger.info(
+        "Target allocation check: current SPY value=$%.2f target=$%.2f gap=$%.2f",
+        current_position_value,
+        target_position_value,
+        value_gap,
+    )
+
+    if abs(value_gap) < min_order_notional:
+        return replace(
+            decision,
+            reason=(
+                f"{decision.reason} Current allocation is within the "
+                f"${settings.min_order_notional:.2f} minimum rebalance threshold."
+            ),
+        )
+
+    if value_gap > 0:
+        return replace(
+            decision,
+            action=TradeAction.BUY,
+            reason=f"{decision.reason} Current allocation is below target, so a buy rebalance is requested.",
+        )
+
+    return replace(
+        decision,
+        action=TradeAction.SELL,
+        reason=f"{decision.reason} Current allocation is above target, so a sell rebalance is requested.",
+    )
 
 
 if __name__ == "__main__":

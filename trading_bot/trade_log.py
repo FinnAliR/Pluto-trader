@@ -30,6 +30,9 @@ FIELD_NAMES = [
     "latest_close",
     "fast_ma",
     "slow_ma",
+    "indicator_name",
+    "indicator_value",
+    "target_fraction",
     "error_message",
 ]
 
@@ -92,6 +95,9 @@ class TradeLogger:
             "latest_close": _format_optional_number(entry.decision.latest_close),
             "fast_ma": _format_optional_number(entry.decision.fast_ma),
             "slow_ma": _format_optional_number(entry.decision.slow_ma),
+            "indicator_name": entry.decision.indicator_name,
+            "indicator_value": _format_optional_number(entry.decision.indicator_value),
+            "target_fraction": _format_optional_number(entry.decision.target_fraction),
             "error_message": entry.error_message,
         }
 
@@ -103,11 +109,30 @@ class TradeLogger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
         if self.path.exists() and self.path.stat().st_size > 0:
+            self._upgrade_schema_if_needed()
             return
 
         with self.path.open("w", newline="", encoding="utf-8") as csv_file:
             writer = csv.DictWriter(csv_file, fieldnames=FIELD_NAMES)
             writer.writeheader()
+
+    def _upgrade_schema_if_needed(self) -> None:
+        with self.path.open("r", newline="", encoding="utf-8") as csv_file:
+            reader = csv.DictReader(csv_file)
+            existing_fields = reader.fieldnames or []
+            rows = list(reader)
+
+        if existing_fields == FIELD_NAMES:
+            return
+
+        if all(field in existing_fields for field in FIELD_NAMES):
+            return
+
+        with self.path.open("w", newline="", encoding="utf-8") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=FIELD_NAMES)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({field: row.get(field, "") for field in FIELD_NAMES})
 
 
 def _market_date(timestamp_utc: datetime) -> str:

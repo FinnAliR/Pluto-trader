@@ -74,7 +74,7 @@ def main() -> int:
     results_path = output_dir / RESULTS_FILE_NAME
     plot_path = output_dir / PLOT_FILE_NAME
     save_summary_csv(full_summary, results_path)
-    plot_equity_curves(full_results, path=plot_path, show_plot=not args.no_show)
+    plot_equity_curves(full_results, path=plot_path, show_plot=args.show and not args.no_show)
 
     print(f"Saved comparison CSV to: {results_path}")
     print(f"Saved equity-curve plot to: {plot_path}")
@@ -189,7 +189,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--exposure",
         type=float,
-        default=DEFAULT_EXPOSURE,
+        default=float(os.getenv("BACKTEST_EXPOSURE", DEFAULT_EXPOSURE)),
         help="Portfolio exposure when long. Use 0.25 to match the live bot's 25%% cap.",
     )
     parser.add_argument(
@@ -209,9 +209,14 @@ def parse_args() -> argparse.Namespace:
         help="Optional train/test split date in YYYY-MM-DD format.",
     )
     parser.add_argument(
+        "--show",
+        action="store_true",
+        help="Open the plot window after saving it. By default the script only saves the PNG.",
+    )
+    parser.add_argument(
         "--no-show",
         action="store_true",
-        help="Save the plot without opening a chart window.",
+        help=argparse.SUPPRESS,
     )
     return parser.parse_args()
 

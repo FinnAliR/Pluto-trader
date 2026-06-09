@@ -66,7 +66,7 @@ def main() -> int:
     print_summary_table(summary, "Backtest results")
 
     plot_path = Path(__file__).resolve().parent / PLOT_FILE_NAME
-    plot_equity_curves([result], path=plot_path, show_plot=not args.no_show)
+    plot_equity_curves([result], path=plot_path, show_plot=args.show and not args.no_show)
     print(f"Saved plot to: {plot_path}")
 
     return 0
@@ -98,7 +98,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--exposure",
         type=float,
-        default=DEFAULT_EXPOSURE,
+        default=float(os.getenv("BACKTEST_EXPOSURE", DEFAULT_EXPOSURE)),
         help="Portfolio exposure when long. Use 0.25 to match the live bot's 25%% cap.",
     )
     parser.add_argument(
@@ -114,12 +114,16 @@ def parse_args() -> argparse.Namespace:
         help="Estimated slippage in basis points per position change.",
     )
     parser.add_argument(
+        "--show",
+        action="store_true",
+        help="Open the plot window after saving it. By default the script only saves the PNG.",
+    )
+    parser.add_argument(
         "--no-show",
         action="store_true",
-        help="Save the plot without opening a chart window.",
+        help=argparse.SUPPRESS,
     )
     return parser.parse_args()
-#test
 
 if __name__ == "__main__":
     raise SystemExit(main())
