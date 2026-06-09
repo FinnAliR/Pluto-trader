@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime, time, timedelta, timezone
 from logging import Logger
+from zoneinfo import ZoneInfo
 
 from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
@@ -11,6 +13,9 @@ from alpaca.trading.requests import GetOrdersRequest, MarketOrderRequest
 from requests.exceptions import RequestException
 
 from config import Settings
+
+
+NEW_YORK_TIME = ZoneInfo("America/New_York")
 
 
 class BrokerError(RuntimeError):
@@ -100,6 +105,29 @@ class AlpacaBroker:
             return True
 
         return False
+
+    def count_orders_submitted_today(self, symbol: str) -> int:
+        """Count Alpaca orders submitted during the current New York market date."""
+        now_new_york = datetime.now(timezone.utc).astimezone(NEW_YORK_TIME)
+        start_new_york = datetime.combine(now_new_york.date(), time.min, tzinfo=NEW_YORK_TIME)
+        end_new_york = start_new_york + timedelta(days=1)
+
+        request = GetOrdersRequest(
+            status=QueryOrderStatus.ALL,
+            symbols=[symbol],
+            after=start_new_york.astimezone(timezone.utc),
+            until=end_new_york.astimezone(timezone.utc),
+            limit=500,
+        )
+
+        try:
+            orders = self.client.get_orders(filter=request)
+        except (APIError, RequestException) as error:
+            raise BrokerError(f"Failed to fetch Alpaca order history: {error}") from error
+
+        count = sum(1 for order in (orders or []) if order.symbol.upper() == symbol.upper())
+        self.logger.info("Alpaca orders submitted today for %s: %d", symbol, count)
+        return count
 
     def submit_market_buy(self, symbol: str, notional: float, client_order_id: str):
         """Submit a paper market buy order by notional value."""

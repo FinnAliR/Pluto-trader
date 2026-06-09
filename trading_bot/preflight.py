@@ -110,12 +110,25 @@ def main() -> int:
                 f"max position limit ${max_position_value:.2f}."
             )
 
-    trades_today = trade_logger.count_submitted_trades_today()
+    local_trades_today = trade_logger.count_submitted_trades_today()
+    try:
+        alpaca_orders_today = broker.count_orders_submitted_today(settings.symbol)
+    except BrokerError as error:
+        print_fail(f"Alpaca order-history check failed: {error}")
+        return 1
+
+    trades_today = max(local_trades_today, alpaca_orders_today)
     if trades_today >= settings.max_daily_trades:
-        print_fail(f"Daily trade limit reached: {trades_today}/{settings.max_daily_trades}")
+        print_fail(
+            f"Daily trade limit reached: effective={trades_today}/{settings.max_daily_trades} "
+            f"(local_csv={local_trades_today}, alpaca={alpaca_orders_today})"
+        )
         failures += 1
     else:
-        print_pass(f"Daily trade limit available: {trades_today}/{settings.max_daily_trades}")
+        print_pass(
+            f"Daily trade limit available: effective={trades_today}/{settings.max_daily_trades} "
+            f"(local_csv={local_trades_today}, alpaca={alpaca_orders_today})"
+        )
 
     print()
     if failures:
