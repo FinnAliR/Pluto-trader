@@ -1,0 +1,14 @@
+# Local secrets
+.env
+trading_bot/.env
+
+# Python generated files
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+
+# Backtest output
+trading_bot/backtest_portfolio_value.png
