@@ -10,15 +10,18 @@ import argparse
 import os
 from pathlib import Path
 
-from backtester import plot_equity_curves, print_summary_table, results_to_summary_frame, run_backtest
-from config import SettingsError, load_settings
-from historical_data import HistoricalDataError, fetch_daily_bars, parse_date
-from strategies.registry import create_strategy, normalize_strategy_name
+from backtester import plot_equity_curves, print_summary_table
+from config import SettingsError
+from historical_data import HistoricalDataError
+from services.backtest_service import (
+    DEFAULT_EXPOSURE,
+    DEFAULT_INITIAL_CASH,
+    DEFAULT_START_DATE,
+    BacktestRequest,
+    run_single_backtest,
+)
 
 
-DEFAULT_START_DATE = "2018-01-01"
-DEFAULT_INITIAL_CASH = 10_000.00
-DEFAULT_EXPOSURE = 0.25
 PLOT_FILE_NAME = "backtest_portfolio_value.png"
 
 
@@ -26,47 +29,43 @@ def main() -> int:
     args = parse_args()
 
     try:
-        settings = load_settings()
+        run_result = run_single_backtest(
+            BacktestRequest(
+                strategy_name=args.strategy,
+                start=args.start,
+                end=args.end,
+                initial_cash=args.initial_cash,
+                exposure=args.exposure,
+                transaction_cost_bps=args.transaction_cost_bps,
+                slippage_bps=args.slippage_bps,
+            )
+        )
     except SettingsError as error:
         print(f"Configuration error: {error}")
         return 1
-
-    strategy_name = normalize_strategy_name(args.strategy)
-    strategy = create_strategy(strategy_name, settings=settings)
-    start_date = parse_date(args.start)
-    end_date = parse_date(args.end) if args.end else None
-
-    print("Running data-only backtest. No live trading connection is used.")
-    print(f"Symbol: {settings.symbol}")
-    print(f"Strategy: {strategy.display_name}")
-    print(f"Exposure when long: {args.exposure:.0%}")
-    print(f"Start date: {start_date.date()}")
-    print(f"End date: {end_date.date() if end_date else 'latest available'}")
-    print()
-
-    try:
-        price_data = fetch_daily_bars(settings=settings, start=start_date, end=end_date)
-    except (HistoricalDataError, ValueError) as error:
+    except HistoricalDataError as error:
         print(f"Historical data error: {error}")
         return 1
-
-    if price_data.empty:
-        print("No historical price data was returned. Check your Alpaca keys and data feed.")
+    except ValueError as error:
+        print(f"Input error: {error}")
         return 1
 
-    result = run_backtest(
-        strategy=strategy,
-        price_data=price_data,
-        initial_cash=args.initial_cash,
-        exposure=args.exposure,
-        transaction_cost_bps=args.transaction_cost_bps,
-        slippage_bps=args.slippage_bps,
-    )
-    summary = results_to_summary_frame([result])
-    print_summary_table(summary, "Backtest results")
+    print("Running data-only backtest. No live trading connection is used.")
+    print(f"Symbol: {run_result.settings.symbol}")
+    print(f"Strategy: {run_result.result.display_name}")
+    print(f"Exposure when long: {args.exposure:.0%}")
+    print(f"Start date: {run_result.start_date.date()}")
+    print(f"End date: {run_result.end_date.date() if run_result.end_date else 'latest available'}")
+    print()
+
+    print_summary_table(run_result.summary, "Backtest results")
 
     plot_path = Path(__file__).resolve().parent / PLOT_FILE_NAME
-    plot_equity_curves([result], path=plot_path, show_plot=args.show and not args.no_show)
+    plot_equity_curves(
+        [run_result.result],
+        path=plot_path,
+        show_plot=args.show and not args.no_show,
+    )
     print(f"Saved plot to: {plot_path}")
 
     return 0

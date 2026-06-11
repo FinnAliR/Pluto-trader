@@ -19,6 +19,7 @@ Edit `trading_bot\.env` and add Alpaca paper-trading keys.
 python trading_bot\preflight.py
 python trading_bot\backtest.py --strategy ma_crossover
 python trading_bot\compare_strategies.py
+python trading_bot\gui.py
 python trading_bot\main.py
 ```
 
@@ -27,9 +28,27 @@ python trading_bot\main.py
 1. Run `python trading_bot\preflight.py` before using the bot.
 2. Backtest the configured strategy with `python trading_bot\backtest.py`.
 3. Compare all strategies with `python trading_bot\compare_strategies.py`.
-4. Run one paper-trading decision with `python trading_bot\main.py`.
+4. Optionally open the data-only GUI with `python trading_bot\gui.py`.
+5. Run one paper-trading decision with `python trading_bot\main.py`.
 
 Backtest plots are saved as PNG files by default. Add `--show` if you want a chart window to open.
+
+## GUI
+
+Run the desktop evaluation GUI:
+
+```powershell
+python trading_bot\gui.py
+```
+
+The GUI can run single backtests, compare strategies, and generate trade-analysis CSVs. It is intentionally data-only and does not expose live or paper order submission.
+
+## Module Layout
+
+- `trading_bot\services\backtest_service.py` contains reusable single-backtest and strategy-comparison workflows.
+- `trading_bot\services\trade_analysis_service.py` contains reusable trade-diagnostic workflow logic.
+- `trading_bot\trade_diagnostics.py` builds trade, missed-day, whipsaw, and suspicious-move reports.
+- CLI files such as `backtest.py`, `compare_strategies.py`, and `trade_analysis.py` are now thin wrappers around those services.
 
 ## Safety Defaults
 
