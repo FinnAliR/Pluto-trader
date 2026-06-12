@@ -43,6 +43,19 @@ python trading_bot\gui.py
 
 The GUI can run single backtests, compare strategies, and generate trade-analysis CSVs. It is intentionally data-only and does not expose live or paper order submission.
 
+GUI features:
+
+- Scrollable control sidebar so action and save buttons remain reachable on smaller screens.
+- Embedded equity-curve chart with matplotlib navigation controls.
+- Drawdown subplot below the equity curve.
+- Mouse-wheel zoom, recent-year focus, full-range reset, and clickable data-point annotations.
+- Save buttons for plot images, summary CSVs, diagnostic CSVs, and the run log.
+- Strategy checklist for comparisons.
+- Date presets for full-history, crash, bear-market, and recovery tests.
+- Regime scorecard that compares strategies across multiple market periods.
+- Summary table with a practical score column.
+- Diagnostics tabs for trades, missed best days, whipsaws, and suspicious daily moves.
+
 ## Module Layout
 
 - `trading_bot\services\backtest_service.py` contains reusable single-backtest and strategy-comparison workflows.

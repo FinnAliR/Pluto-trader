@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+from matplotlib.ticker import FuncFormatter
 import pandas as pd
 
 from strategies.base import Strategy
@@ -244,37 +247,107 @@ def plot_equity_curves(
         return
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    figure = create_equity_curve_figure(results)
+    figure.savefig(path)
 
-    plt.figure(figsize=(12, 6))
-    for result in results:
-        plt.plot(result.data.index, result.data["portfolio_value"], label=result.strategy_name)
+    if show_plot:
+        plt.show()
+    else:
+        plt.close(figure)
+
+
+def create_equity_curve_figure(
+    results: list[BacktestResult],
+    focus_recent_days: int | None = None,
+) -> Figure:
+    """Create an equity-curve and drawdown figure without saving it."""
+    figure, (equity_axis, drawdown_axis) = plt.subplots(
+        nrows=2,
+        ncols=1,
+        figsize=(12, 7),
+        sharex=True,
+        constrained_layout=True,
+        gridspec_kw={"height_ratios": [3, 1], "hspace": 0.08},
+    )
+    figure.patch.set_facecolor("#f8fafc")
+
+    color_cycle = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
+    for index, result in enumerate(results):
+        color = color_cycle[index % len(color_cycle)] if color_cycle else None
+        equity_axis.plot(
+            result.data.index,
+            result.data["portfolio_value"],
+            label=result.strategy_name,
+            linewidth=2.2,
+            color=color,
+        )
+        drawdown = (result.data["portfolio_value"] / result.data["portfolio_value"].cummax()) - 1
+        drawdown_axis.plot(
+            result.data.index,
+            drawdown,
+            label=result.strategy_name,
+            linewidth=1.4,
+            color=color,
+            alpha=0.9,
+        )
 
     first_result = results[0]
     benchmark_exposure = first_result.metrics["exposure"]
-    plt.plot(
+    equity_axis.plot(
         first_result.data.index,
         first_result.data["buy_hold_same_exposure_value"],
         label=f"buy_hold_same_exposure_{benchmark_exposure:.0%}",
         linestyle=":",
         linewidth=2,
         alpha=0.9,
+        color="#334155",
     )
-    plt.plot(
+    equity_axis.plot(
         first_result.data.index,
         first_result.data["buy_hold_full_value"],
         label="buy_hold_full_exposure",
         linestyle="--",
         alpha=0.7,
+        color="#64748b",
     )
-    plt.title("SPY Strategy Equity Curves")
-    plt.xlabel("Date")
-    plt.ylabel("Portfolio value ($)")
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(path)
 
-    if show_plot:
-        plt.show()
-    else:
-        plt.close()
+    same_exposure_drawdown = (
+        first_result.data["buy_hold_same_exposure_value"]
+        / first_result.data["buy_hold_same_exposure_value"].cummax()
+    ) - 1
+    drawdown_axis.plot(
+        first_result.data.index,
+        same_exposure_drawdown,
+        label=f"buy_hold_same_exposure_{benchmark_exposure:.0%}",
+        linestyle=":",
+        linewidth=1.3,
+        color="#334155",
+        alpha=0.9,
+    )
+
+    for axis in (equity_axis, drawdown_axis):
+        axis.set_facecolor("#ffffff")
+        axis.grid(True, color="#cbd5e1", alpha=0.55, linewidth=0.8)
+        axis.spines["top"].set_visible(False)
+        axis.spines["right"].set_visible(False)
+
+    equity_axis.set_title("SPY Strategy Equity Curves", loc="left", fontsize=13, fontweight="bold")
+    equity_axis.set_ylabel("Portfolio value")
+    equity_axis.yaxis.set_major_formatter(FuncFormatter(lambda value, _position: f"${value:,.0f}"))
+    equity_axis.legend(loc="upper left", ncols=2, fontsize=9, frameon=False)
+
+    drawdown_axis.axhline(0, color="#94a3b8", linewidth=0.8)
+    drawdown_axis.set_ylabel("Drawdown")
+    drawdown_axis.set_xlabel("Date")
+    drawdown_axis.yaxis.set_major_formatter(FuncFormatter(lambda value, _position: f"{value:.0%}"))
+
+    locator = mdates.AutoDateLocator(minticks=4, maxticks=8)
+    drawdown_axis.xaxis.set_major_locator(locator)
+    drawdown_axis.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+
+    if focus_recent_days is not None and focus_recent_days > 0:
+        index = first_result.data.index
+        if len(index) > focus_recent_days:
+            equity_axis.set_xlim(index[-focus_recent_days], index[-1])
+
+    return figure
