@@ -41,7 +41,13 @@ Run the desktop evaluation GUI:
 python trading_bot\gui.py
 ```
 
-The GUI can run single backtests, compare strategies, and generate trade-analysis CSVs. It is intentionally data-only and does not expose live or paper order submission.
+Equivalent package entry point:
+
+```powershell
+python -m trading_bot.ui.gui
+```
+
+The GUI can run selected strategies, compare strategies, and generate trade-analysis CSVs. It is intentionally data-only and does not expose live or paper order submission.
 
 GUI features:
 
@@ -50,7 +56,10 @@ GUI features:
 - Drawdown subplot below the equity curve.
 - Mouse-wheel zoom, recent-year focus, full-range reset, and clickable data-point annotations.
 - Save buttons for plot images, summary CSVs, diagnostic CSVs, and the run log.
-- Strategy checklist for comparisons.
+- Strategy checklist drives the main run button: one checked strategy runs a single backtest, while multiple checked strategies run a comparison.
+- Strategy Parameters section lets each strategy keep its own editable parameter set for backtests, comparisons, regime scorecards, and diagnostics.
+- Market dropdown lets data-only evaluations run on built-in symbols or any typed Alpaca-supported stock/ETF symbol; enter multiple comma-separated symbols and use Run Market Matrix to compare best strategies by market.
+- Hover/focus descriptions are available on the main controls, tables, plot area, and action buttons.
 - Date presets for full-history, crash, bear-market, and recovery tests.
 - Regime scorecard that compares strategies across multiple market periods.
 - Summary table with a practical score column.
@@ -58,16 +67,39 @@ GUI features:
 
 ## Module Layout
 
-- `trading_bot\services\backtest_service.py` contains reusable single-backtest and strategy-comparison workflows.
-- `trading_bot\services\trade_analysis_service.py` contains reusable trade-diagnostic workflow logic.
-- `trading_bot\trade_diagnostics.py` builds trade, missed-day, whipsaw, and suspicious-move reports.
-- CLI files such as `backtest.py`, `compare_strategies.py`, and `trade_analysis.py` are now thin wrappers around those services.
+Root-level scripts such as `trading_bot\gui.py`, `backtest.py`, `compare_strategies.py`, `trade_analysis.py`, `preflight.py`, and `main.py` are compatibility wrappers. The implementation is organized into packages:
+
+- `trading_bot\ui\` contains the Tkinter GUI.
+- `trading_bot\cli\` contains command-line backtest, comparison, and trade-analysis entry points.
+- `trading_bot\backtesting\` contains the reusable backtest engine, summary generation, and plot construction.
+- `trading_bot\services\` contains reusable workflows shared by the CLI and GUI.
+- `trading_bot\market_data\` contains Alpaca historical and live market-data helpers.
+- `trading_bot\execution\` contains paper-trading broker, risk, live decision-cycle, and trade-log code.
+- `trading_bot\diagnostics\` builds trade, missed-day, whipsaw, and suspicious-move reports.
+- `trading_bot\core\` contains configuration and logging helpers.
+
+You can keep using the root wrappers or run the package modules directly:
+
+```powershell
+python -m trading_bot.cli.backtest --strategy ma_crossover
+python -m trading_bot.cli.compare_strategies
+python -m trading_bot.cli.trade_analysis --strategy ma_crossover
+python -m trading_bot.execution.preflight
+python -m trading_bot.execution.main
+```
+
+Data-only CLI market override example:
+
+```powershell
+python -m trading_bot.cli.compare_strategies --symbol QQQ
+```
 
 ## Safety Defaults
 
 - The broker is hard-coded to Alpaca paper trading.
 - The bot refuses to run unless `PAPER_TRADING=True` and `ALPACA_PAPER=True`.
 - The symbol is locked to `SPY`.
+- GUI/CLI backtests can override the historical-data symbol for research, but live/paper execution remains locked to the configured `SPY` safety check.
 - New buys are capped by `BUYING_POWER_FRACTION` and `MAX_POSITION_SIZE_FRACTION`.
 - `TRIAL_MODE=true` caps paper buy orders to `TRIAL_MAX_NOTIONAL`.
 
@@ -81,7 +113,10 @@ core_tactical_ma
 rebound_reentry_ma
 rsi
 breakout
+candle_pattern_jpy_session
 buy_and_hold
 ```
 
 `core_tactical_ma` can use fractional target exposure. The live bot now rebalances toward that target by buying or trimming only the difference.
+
+`candle_pattern_jpy_session` is a long/flat adaptation of the referenced candle-pattern notebook. The original notebook used long and short stop orders in `backtesting.py`; this app's backtester is long-only, so bullish candle signals enter/hold exposure and bearish candle signals exit to cash.

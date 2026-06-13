@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 import pandas as pd
 
-from backtester import BacktestResult, run_backtest
-from config import Settings, load_settings
-from historical_data import HistoricalDataError, fetch_daily_bars, parse_date
-from strategies.registry import create_strategy, normalize_strategy_name
-from trade_diagnostics import (
+from trading_bot.backtesting.engine import BacktestResult, run_backtest
+from trading_bot.core.config import Settings, load_settings
+from trading_bot.market_data.history import HistoricalDataError, fetch_daily_bars, parse_date
+from trading_bot.services.backtest_service import normalize_symbol
+from trading_bot.strategies.registry import create_strategy, normalize_strategy_name
+from trading_bot.diagnostics.reports import (
     build_trade_report,
     find_missed_best_days,
     find_suspicious_moves,
@@ -31,6 +33,7 @@ class TradeAnalysisRequest:
     """Inputs for one strategy trade-diagnostic run."""
 
     strategy_name: str = "ma_crossover"
+    symbol: str = "SPY"
     start: str = DEFAULT_START_DATE
     end: str | None = None
     initial_cash: float = DEFAULT_INITIAL_CASH
@@ -40,6 +43,7 @@ class TradeAnalysisRequest:
     top_days: int = DEFAULT_TOP_DAYS
     short_trade_days: int = DEFAULT_SHORT_TRADE_DAYS
     suspicious_move_threshold: float = DEFAULT_SUSPICIOUS_MOVE_THRESHOLD
+    strategy_params: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -47,6 +51,7 @@ class TradeAnalysisResult:
     """Outputs from a trade-diagnostic run."""
 
     settings: Settings
+    symbol: str
     strategy_name: str
     result: BacktestResult
     trades: pd.DataFrame
@@ -63,17 +68,18 @@ def run_trade_analysis(
     """Run a strategy backtest and build diagnostic report tables."""
     loaded_settings = settings or load_settings()
     strategy_name = normalize_strategy_name(request.strategy_name)
+    symbol = normalize_symbol(request.symbol)
     start_date = parse_date(request.start)
     end_date = parse_date(request.end) if request.end else None
 
     data = price_data
     if data is None:
-        data = fetch_daily_bars(settings=loaded_settings, start=start_date, end=end_date)
+        data = fetch_daily_bars(settings=loaded_settings, start=start_date, end=end_date, symbol=symbol)
 
     if data.empty:
-        raise HistoricalDataError("No historical price data was returned. Check your Alpaca keys and data feed.")
+        raise HistoricalDataError(f"No historical price data was returned for {symbol}. Check the symbol, Alpaca keys, and data feed.")
 
-    strategy = create_strategy(strategy_name, settings=loaded_settings)
+    strategy = create_strategy(strategy_name, settings=loaded_settings, params=request.strategy_params)
     result = run_backtest(
         strategy=strategy,
         price_data=data,
@@ -93,6 +99,7 @@ def run_trade_analysis(
 
     return TradeAnalysisResult(
         settings=loaded_settings,
+        symbol=symbol,
         strategy_name=strategy_name,
         result=result,
         trades=trades,

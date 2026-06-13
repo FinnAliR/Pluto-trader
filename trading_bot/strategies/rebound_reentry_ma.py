@@ -29,7 +29,7 @@ class ReboundReentryMovingAverageStrategy(Strategy):
         self.rebound_min_return = rebound_min_return
         self.display_name = (
             f"MA{fast_period}/MA{slow_period} + "
-            f"{rebound_return_days}d rebound re-entry"
+            f"MA{rebound_ma_period} {rebound_return_days}d rebound>{rebound_min_return:.1%}"
         )
 
     def generate_signals(self, price_data: pd.DataFrame) -> pd.Series:
