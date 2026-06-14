@@ -20,6 +20,7 @@ from trading_bot.services.backtest_service import (
     BacktestRequest,
     run_single_backtest,
 )
+from trading_bot.strategies.registry import available_strategy_names
 
 
 PLOT_FILE_NAME = "backtest_portfolio_value.png"
@@ -73,14 +74,12 @@ def main() -> int:
 
 
 def parse_args() -> argparse.Namespace:
+    available_strategies = ", ".join(available_strategy_names())
     parser = argparse.ArgumentParser(description="Backtest one strategy using Alpaca daily historical data.")
     parser.add_argument(
         "--strategy",
         default=os.getenv("STRATEGY", "ma_crossover"),
-        help=(
-            "Strategy to test: ma_crossover, core_tactical_ma, rebound_reentry_ma, "
-            "rsi, breakout, candle_pattern_jpy_session, buy_and_hold."
-        ),
+        help=f"Strategy to test. Auto-discovered strategies now available: {available_strategies}.",
     )
     parser.add_argument(
         "--symbol",

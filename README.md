@@ -57,9 +57,13 @@ GUI features:
 - Mouse-wheel zoom, recent-year focus, full-range reset, and clickable data-point annotations.
 - Save buttons for plot images, summary CSVs, diagnostic CSVs, and the run log.
 - Strategy checklist drives the main run button: one checked strategy runs a single backtest, while multiple checked strategies run a comparison.
+- Run toggles let you execute backtest/compare, regime scorecard, market matrix, and trade diagnostics together for the selected strategy set.
+- Edge Lab scores selected strategies using out-of-sample performance, market breadth, regime consistency, cost stress, and parameter sensitivity.
+- Validate Strategies checks discovered strategy files, editable params, signal output, and decision output before you trust a custom strategy.
+- Presets save and load the current GUI setup, including strategy selections, strategy parameters, dates, markets, run toggles, costs, and diagnostics settings.
 - Strategy Parameters section lets each strategy keep its own editable parameter set for backtests, comparisons, regime scorecards, and diagnostics.
 - Market dropdown lets data-only evaluations run on built-in symbols or any typed Alpaca-supported stock/ETF symbol; enter multiple comma-separated symbols and use Run Market Matrix to compare best strategies by market.
-- Hover/focus descriptions are available on the main controls, tables, plot area, and action buttons.
+- Hover/focus descriptions are available on buttons, checkboxes, dropdowns, and text-entry fields.
 - Date presets for full-history, crash, bear-market, and recovery tests.
 - Regime scorecard that compares strategies across multiple market periods.
 - Summary table with a practical score column.
@@ -73,10 +77,12 @@ Root-level scripts such as `trading_bot\gui.py`, `backtest.py`, `compare_strateg
 - `trading_bot\cli\` contains command-line backtest, comparison, and trade-analysis entry points.
 - `trading_bot\backtesting\` contains the reusable backtest engine, summary generation, and plot construction.
 - `trading_bot\services\` contains reusable workflows shared by the CLI and GUI.
+- `trading_bot\strategies\` contains built-in and user-created strategy classes.
 - `trading_bot\market_data\` contains Alpaca historical and live market-data helpers.
 - `trading_bot\execution\` contains paper-trading broker, risk, live decision-cycle, and trade-log code.
 - `trading_bot\diagnostics\` builds trade, missed-day, whipsaw, and suspicious-move reports.
 - `trading_bot\core\` contains configuration and logging helpers.
+- `docs\STRATEGIES.md` explains how to add custom strategies with GUI-editable parameters.
 
 You can keep using the root wrappers or run the package modules directly:
 
@@ -94,6 +100,26 @@ Data-only CLI market override example:
 python -m trading_bot.cli.compare_strategies --symbol QQQ
 ```
 
+## Run Presets
+
+The GUI can save run presets as JSON files in the repo-level `presets\` folder by default. Presets are safe to edit by hand and include selected strategies, custom parameter values, date ranges, market symbols, run toggles, cost/slippage assumptions, and diagnostic settings.
+
+If a loaded preset references a strategy or parameter that no longer exists, the GUI keeps loading the rest of the preset and writes the skipped items to the Run Log.
+
+## Edge Lab
+
+Use Edge Lab to look for strategies worth paper-tracking, not to prove that a strategy will make money.
+
+Edge Lab combines:
+
+- Walk-forward evidence using the split date as the boundary between train and test periods.
+- Market breadth across all comma-separated symbols in the Market field.
+- Regime checks across full history, crash, bear-market, and recovery periods.
+- Cost stress using higher transaction cost and slippage assumptions.
+- Parameter sensitivity by perturbing editable numeric strategy parameters.
+
+The output table includes `edge_score`, `verdict`, `test_excess`, `market_pass_rate`, `regime_pass_rate`, `cost_resilience`, `parameter_stability`, and `notes`. Treat `candidate` as "worth paper-tracking", `watch` as "needs more evidence", and `reject` as "do not trust this configuration yet."
+
 ## Safety Defaults
 
 - The broker is hard-coded to Alpaca paper trading.
@@ -105,7 +131,7 @@ python -m trading_bot.cli.compare_strategies --symbol QQQ
 
 ## Strategy Choices
 
-Set `STRATEGY` in `trading_bot\.env`.
+Set `STRATEGY` in `trading_bot\.env`, or choose strategies in the GUI. Strategies are auto-discovered from `trading_bot\strategies\`, so custom strategies appear in the GUI and CLI after restart when they subclass the shared `Strategy` base class.
 
 ```text
 ma_crossover
@@ -120,3 +146,5 @@ buy_and_hold
 `core_tactical_ma` can use fractional target exposure. The live bot now rebalances toward that target by buying or trimming only the difference.
 
 `candle_pattern_jpy_session` is a long/flat adaptation of the referenced candle-pattern notebook. The original notebook used long and short stop orders in `backtesting.py`; this app's backtester is long-only, so bullish candle signals enter/hold exposure and bearish candle signals exit to cash.
+
+Custom strategy parameters are discovered from constructor arguments with default values. For the complete authoring contract and a copyable template, see `docs\STRATEGIES.md`.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import calendar
+import json
 import queue
 import threading
 import traceback
@@ -31,6 +32,7 @@ from trading_bot.services.backtest_service import (
     run_single_backtest,
     run_strategy_comparison,
 )
+from trading_bot.services.edge_analysis_service import EdgeAnalysisRequest, EdgeAnalysisResult, run_edge_analysis
 from trading_bot.services.trade_analysis_service import (
     DEFAULT_SHORT_TRADE_DAYS,
     DEFAULT_SUSPICIOUS_MOVE_THRESHOLD,
@@ -39,11 +41,19 @@ from trading_bot.services.trade_analysis_service import (
     TradeAnalysisResult,
     run_trade_analysis,
 )
-from trading_bot.strategies.registry import available_strategy_names, normalize_strategy_params, strategy_parameter_specs
+from trading_bot.strategies.registry import (
+    available_strategy_names,
+    normalize_strategy_params,
+    strategy_discovery_errors,
+    strategy_parameter_specs,
+)
+from trading_bot.strategies.validation import validate_all_strategies, validation_results_to_frame
 from trading_bot.diagnostics.reports import AnalysisFiles, save_reports
 
 
 BOT_DIR = Path(__file__).resolve().parents[1]
+RUN_PRESETS_DIR = BOT_DIR.parent / "presets"
+RUN_PRESET_VERSION = 1
 DEFAULT_SPLIT_DATE = "2022-01-01"
 
 DATE_PRESETS = {
@@ -59,6 +69,34 @@ REGIME_PACK = [
     ("COVID crash", "2020-02-20", "2020-04-30"),
     ("2022 bear market", "2022-01-01", "2022-12-31"),
     ("Recovery trend", "2023-01-01", None),
+]
+
+RUN_ASPECTS = [
+    (
+        "selected",
+        "Backtest / Compare",
+        "Run one checked strategy as a single backtest; compare strategies when multiple are checked.",
+    ),
+    (
+        "regime",
+        "Regime Scorecard",
+        "Compare checked strategies across full-history, crash, bear-market, and recovery periods.",
+    ),
+    (
+        "market",
+        "Market Matrix",
+        "Compare checked strategies across comma-separated symbols from the Market field.",
+    ),
+    (
+        "edge",
+        "Edge Lab",
+        "Score checked strategies by out-of-sample behavior, market breadth, regime consistency, cost stress, and parameter stability.",
+    ),
+    (
+        "analysis",
+        "Trade Diagnostics",
+        "Build trade diagnostics for the primary strategy, or the only checked strategy when exactly one is selected.",
+    ),
 ]
 
 MARKET_CATALOG = [
@@ -99,11 +137,39 @@ MARKET_SYMBOLS = [symbol for symbol, _description in MARKET_CATALOG]
 MARKET_DESCRIPTION_TEXT = "\n".join(f"{symbol}: {description}" for symbol, description in MARKET_CATALOG)
 
 SUMMARY_COLUMN_LABELS = {
+    "status": "Status",
     "symbol": "Market",
     "period": "Period",
     "score": "Score",
+    "edge_score": "Edge Score",
+    "verdict": "Verdict",
     "strategy": "Strategy",
     "display_name": "Display Name",
+    "primary_symbol": "Primary",
+    "full_excess": "Full Excess",
+    "train_excess": "Train Excess",
+    "test_excess": "Test Excess",
+    "test_sharpe": "Test Sharpe",
+    "test_max_drawdown": "Test Max DD",
+    "market_pass_rate": "Market Pass",
+    "positive_markets": "Positive Markets",
+    "markets_tested": "Markets",
+    "regime_pass_rate": "Regime Pass",
+    "regime_periods_tested": "Regimes",
+    "cost_resilience": "Cost Resilience",
+    "stressed_excess": "Stressed Excess",
+    "parameter_stability": "Param Stability",
+    "parameter_variants_tested": "Param Variants",
+    "notes": "Notes",
+    "variant": "Variant",
+    "changed_param": "Changed Param",
+    "param_value": "Param Value",
+    "passes_edge_gate": "Passes Gate",
+    "cost_case": "Cost Case",
+    "editable_parameters": "Editable Params",
+    "checks": "Checks",
+    "warnings": "Warnings",
+    "errors": "Errors",
     "total_return": "Return",
     "buy_hold_same_exposure_return": "B&H Same",
     "buy_hold_full_return": "B&H Full",
@@ -120,14 +186,42 @@ SUMMARY_COLUMN_LABELS = {
 }
 
 SUMMARY_COLUMN_ORDER = [
+    "status",
     "symbol",
     "period",
+    "edge_score",
+    "verdict",
     "score",
     "strategy",
     "display_name",
+    "primary_symbol",
+    "full_excess",
+    "train_excess",
+    "test_excess",
+    "test_sharpe",
+    "test_max_drawdown",
+    "market_pass_rate",
+    "positive_markets",
+    "markets_tested",
+    "regime_pass_rate",
+    "regime_periods_tested",
+    "cost_resilience",
+    "stressed_excess",
+    "parameter_stability",
+    "parameter_variants_tested",
+    "notes",
     "total_return",
     "buy_hold_same_exposure_return",
     "excess_vs_same_exposure",
+    "full_excess",
+    "train_excess",
+    "test_excess",
+    "test_max_drawdown",
+    "market_pass_rate",
+    "regime_pass_rate",
+    "cost_resilience",
+    "stressed_excess",
+    "parameter_stability",
     "cagr",
     "max_drawdown",
     "sharpe",
@@ -158,7 +252,16 @@ PERCENT_COLUMNS = {
 }
 
 MONEY_COLUMNS = {"final_value", "entry_close", "exit_close", "close"}
-INTEGER_COLUMNS = {"trades", "missed_top_20_up_days", "trade_number", "days_held"}
+INTEGER_COLUMNS = {
+    "trades",
+    "missed_top_20_up_days",
+    "trade_number",
+    "days_held",
+    "positive_markets",
+    "markets_tested",
+    "regime_periods_tested",
+    "parameter_variants_tested",
+}
 
 
 @dataclass(frozen=True)
@@ -344,9 +447,18 @@ class PlutoTraderGui(tk.Tk):
         self._export_buttons: list[ttk.Button] = []
 
         self.strategy_names = available_strategy_names()
-        self.strategy_var = tk.StringVar(value="ma_crossover")
+        if not self.strategy_names:
+            raise RuntimeError("No valid strategies were discovered in trading_bot.strategies.")
+
+        self.strategy_discovery_errors = strategy_discovery_errors()
+        default_strategy = "ma_crossover" if "ma_crossover" in self.strategy_names else self.strategy_names[0]
+        self.strategy_var = tk.StringVar(value=default_strategy)
         self.strategy_checks = {name: tk.BooleanVar(value=True) for name in self.strategy_names}
         self.market_var = tk.StringVar(value="SPY")
+        self.run_aspect_vars = {
+            key: tk.BooleanVar(value=(key == "selected"))
+            for key, _label, _description in RUN_ASPECTS
+        }
         self.strategy_param_edit_var = tk.StringVar(value=self.strategy_names[0])
         self.strategy_param_vars = {
             strategy_name: {
@@ -386,12 +498,14 @@ class PlutoTraderGui(tk.Tk):
         self.plot_marker = None
         self.plot_original_limits: dict[Any, tuple[tuple[float, float], tuple[float, float]]] = {}
         self.plot_connections: list[int] = []
+        self.edge_trees: dict[str, ttk.Frame] = {}
         self.diagnostic_trees: dict[str, ttk.Frame] = {}
         self.strategy_param_fields_frame: ttk.Frame | None = None
 
         self._configure_style()
         self._build_layout()
         self._set_export_buttons_enabled(False)
+        self._log_strategy_discovery_errors()
         self.after(100, self._poll_messages)
 
     def _configure_style(self) -> None:
@@ -534,8 +648,18 @@ class PlutoTraderGui(tk.Tk):
         self.notebook.grid(row=1, column=0, sticky="nsew")
         self._build_dashboard_tab()
         self._build_summary_tab()
+        self._build_edge_tab()
         self._build_diagnostics_tab()
         self._build_log_tab()
+
+    def _log_strategy_discovery_errors(self) -> None:
+        if not self.strategy_discovery_errors:
+            return
+
+        self.status_var.set("Ready. Some custom strategies failed to load; see Run Log.")
+        self._log("Some strategy files could not be loaded and were skipped:")
+        for module_name, error in sorted(self.strategy_discovery_errors.items()):
+            self._log(f"{module_name}: {type(error).__name__}: {error}")
 
     def _create_scrollable_sidebar(self, parent: ttk.Frame) -> ttk.Frame:
         canvas = tk.Canvas(parent, width=360, background="#111827", highlightthickness=0, bd=0)
@@ -694,35 +818,70 @@ class PlutoTraderGui(tk.Tk):
         actions_frame = ttk.LabelFrame(parent, text="Run", padding=10)
         actions_frame.grid(row=8, column=0, sticky="ew", pady=(0, 10))
         actions_frame.columnconfigure(0, weight=1)
-        self._describe_widget(actions_frame, "Run actions for selected-strategy evaluation, regime scorecards, and diagnostics.")
+        actions_frame.columnconfigure(1, weight=1)
+        self._describe_widget(actions_frame, "Toggle which run aspects should execute, then run all enabled aspects together.")
+
+        for row, (key, label, description) in enumerate(RUN_ASPECTS):
+            checkbox = ttk.Checkbutton(
+                actions_frame,
+                text=label,
+                variable=self.run_aspect_vars[key],
+            )
+            checkbox.grid(row=row, column=0, columnspan=2, sticky="w", pady=2)
+            self._describe_widget(checkbox, description)
+
         self._add_action_button(
             actions_frame,
-            "Run Selected Strategies",
-            self._run_selected_strategies,
-            "Run a single backtest when one strategy is checked; compare strategies when multiple are checked.",
+            "Run Enabled Aspects",
+            self._run_enabled_aspects,
+            "Run every checked aspect in sequence for the selected strategy set.",
             primary=True,
-        ).grid(row=0, column=0, sticky="ew", pady=3)
+        ).grid(row=len(RUN_ASPECTS), column=0, columnspan=2, sticky="ew", pady=(8, 3))
+
+        all_aspects_button = ttk.Button(actions_frame, text="All Aspects", command=lambda: self._set_run_aspects(True))
+        all_aspects_button.grid(row=len(RUN_ASPECTS) + 1, column=0, sticky="ew", pady=3, padx=(0, 3))
+        self._describe_widget(all_aspects_button, "Turn on every run aspect toggle.")
+
+        default_aspect_button = ttk.Button(actions_frame, text="Backtest Only", command=self._set_default_run_aspects)
+        default_aspect_button.grid(row=len(RUN_ASPECTS) + 1, column=1, sticky="ew", pady=3, padx=(3, 0))
+        self._describe_widget(default_aspect_button, "Turn on only the Backtest / Compare aspect.")
+
         self._add_action_button(
             actions_frame,
-            "Run Regime Scorecard",
-            self._run_regime_pack,
-            "Compare the checked strategies across full-history, crash, bear-market, and recovery periods.",
-        ).grid(row=1, column=0, sticky="ew", pady=3)
+            "Validate Strategies",
+            self._validate_strategies,
+            "Check discovered strategies for load errors, editable parameters, signal output, and decision output.",
+        ).grid(row=len(RUN_ASPECTS) + 2, column=0, columnspan=2, sticky="ew", pady=(8, 3))
+
         self._add_action_button(
             actions_frame,
-            "Run Market Matrix",
-            self._run_market_matrix,
-            "Compare checked strategies across comma-separated market symbols from the Market field.",
-        ).grid(row=2, column=0, sticky="ew", pady=3)
-        self._add_action_button(
-            actions_frame,
-            "Analyze Primary Strategy",
-            self._run_trade_analysis,
-            "Build trade diagnostics for the primary strategy, or for the only checked strategy when exactly one is selected.",
-        ).grid(row=3, column=0, sticky="ew", pady=3)
+            "Run Edge Lab",
+            self._run_edge_analysis,
+            "Score selected strategies for edge evidence using walk-forward, market breadth, regime, cost, and parameter tests.",
+        ).grid(row=len(RUN_ASPECTS) + 3, column=0, columnspan=2, sticky="ew", pady=3)
+
+        presets_frame = ttk.LabelFrame(parent, text="Presets", padding=10)
+        presets_frame.grid(row=9, column=0, sticky="ew", pady=(0, 10))
+        presets_frame.columnconfigure(0, weight=1)
+        presets_frame.columnconfigure(1, weight=1)
+        self._describe_widget(presets_frame, "Save or load the current GUI run configuration as a JSON preset.")
+        save_preset_button = self._add_action_button(
+            presets_frame,
+            "Save Preset",
+            self._save_run_preset,
+            "Save selected strategies, strategy params, dates, symbols, run toggles, and model inputs.",
+        )
+        save_preset_button.grid(row=0, column=0, sticky="ew", pady=3, padx=(0, 3))
+        load_preset_button = self._add_action_button(
+            presets_frame,
+            "Load Preset",
+            self._load_run_preset,
+            "Load a previously saved run preset JSON file.",
+        )
+        load_preset_button.grid(row=0, column=1, sticky="ew", pady=3, padx=(3, 0))
 
         exports_frame = ttk.LabelFrame(parent, text="Save", padding=10)
-        exports_frame.grid(row=9, column=0, sticky="ew")
+        exports_frame.grid(row=10, column=0, sticky="ew")
         exports_frame.columnconfigure(0, weight=1)
         self._describe_widget(exports_frame, "Save controls for charts, summaries, diagnostics, and logs.")
         self.save_plot_button = self._add_export_button(exports_frame, "Save Plot PNG", self._save_plot, "Save the current equity-curve chart as PNG, PDF, or SVG.")
@@ -828,6 +987,31 @@ class PlutoTraderGui(tk.Tk):
 
         self.summary_tree = self._create_tree(tab, "Summary table of strategy performance metrics.")
         self.summary_tree.grid(row=1, column=0, sticky="nsew")
+
+    def _build_edge_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, style="App.TFrame", padding=14)
+        self.notebook.add(tab, text="Edge Lab")
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(0, weight=1)
+
+        edge_notebook = ttk.Notebook(tab)
+        edge_notebook.grid(row=0, column=0, sticky="nsew")
+        self._describe_widget(edge_notebook, "Edge Lab detail tabs for market breadth, regime consistency, parameter stability, and cost stress.")
+
+        for key, title, description in [
+            ("market", "Markets", "Market-by-market edge evidence for each checked strategy."),
+            ("regime", "Regimes", "Regime-by-regime edge evidence on the primary market."),
+            ("parameters", "Parameters", "Parameter sensitivity checks around the selected strategy parameter values."),
+            ("costs", "Costs", "Configured-cost and stressed-cost backtests on the primary market."),
+        ]:
+            frame = ttk.Frame(edge_notebook, style="App.TFrame", padding=8)
+            frame.columnconfigure(0, weight=1)
+            frame.rowconfigure(0, weight=1)
+            edge_notebook.add(frame, text=title)
+            tree_container = self._create_tree(frame, description)
+            tree_container.grid(row=0, column=0, sticky="nsew")
+            self.edge_trees[key] = tree_container
+        self._clear_edge_details()
 
     def _build_diagnostics_tab(self) -> None:
         tab = ttk.Frame(self.notebook, style="App.TFrame", padding=14)
@@ -949,6 +1133,14 @@ class PlutoTraderGui(tk.Tk):
             variable.set(checked)
         self._sync_primary_strategy_from_checks()
 
+    def _set_run_aspects(self, checked: bool) -> None:
+        for variable in self.run_aspect_vars.values():
+            variable.set(checked)
+
+    def _set_default_run_aspects(self) -> None:
+        for key, variable in self.run_aspect_vars.items():
+            variable.set(key == "selected")
+
     def _market_symbols(self) -> list[str]:
         raw_symbols = self.market_var.get().replace(";", ",").split(",")
         symbols = [normalize_symbol(symbol) for symbol in raw_symbols if symbol.strip()]
@@ -978,7 +1170,7 @@ class PlutoTraderGui(tk.Tk):
         if len(strategy_names) == 1:
             self.strategy_var.set(strategy_names[0])
 
-    def _strategy_params_for(self, strategy_name: str) -> dict[str, int | float]:
+    def _strategy_params_for(self, strategy_name: str) -> dict[str, Any]:
         raw_params = {
             param_name: variable.get().strip()
             for param_name, variable in self.strategy_param_vars.get(strategy_name, {}).items()
@@ -988,7 +1180,7 @@ class PlutoTraderGui(tk.Tk):
         except ValueError as error:
             raise ValueError(f"{strategy_name}: {error}") from error
 
-    def _strategy_params_by_name(self, strategy_names: list[str]) -> dict[str, dict[str, int | float]]:
+    def _strategy_params_by_name(self, strategy_names: list[str]) -> dict[str, dict[str, Any]]:
         return {strategy_name: self._strategy_params_for(strategy_name) for strategy_name in strategy_names}
 
     def _apply_date_preset(self) -> None:
@@ -996,6 +1188,113 @@ class PlutoTraderGui(tk.Tk):
         self.start_var.set(start)
         self.end_var.set(end)
         self._log(f"Applied date preset: {self.preset_var.get()} ({start} to {end or 'latest'}).")
+
+    def _selected_run_aspects(self) -> list[str]:
+        return [key for key, variable in self.run_aspect_vars.items() if variable.get()]
+
+    def _run_enabled_aspects(self) -> None:
+        try:
+            strategy_names = self._selected_strategy_names()
+            if not strategy_names:
+                raise ValueError("Select at least one strategy to run.")
+
+            selected_aspects = self._selected_run_aspects()
+            if not selected_aspects:
+                raise ValueError("Select at least one run aspect.")
+
+            run_plan: list[tuple[str, str, Callable[[], Any]]] = []
+
+            if "selected" in selected_aspects:
+                if len(strategy_names) == 1:
+                    strategy_name = strategy_names[0]
+                    self.strategy_var.set(strategy_name)
+                    request = self._backtest_request(strategy_name)
+                    run_plan.append(
+                        (
+                            "Backtest / Compare",
+                            "backtest",
+                            lambda request=request: run_single_backtest(request),
+                        )
+                    )
+                else:
+                    request = self._comparison_request(include_split=True, strategy_names=strategy_names)
+                    run_plan.append(
+                        (
+                            "Backtest / Compare",
+                            "comparison",
+                            lambda request=request: run_strategy_comparison(request),
+                        )
+                    )
+
+            if "regime" in selected_aspects:
+                base_request = self._comparison_request(include_split=False, strategy_names=strategy_names)
+                run_plan.append(
+                    (
+                        "Regime Scorecard",
+                        "regime",
+                        lambda base_request=base_request: self._run_regime_worker(base_request),
+                    )
+                )
+
+            if "market" in selected_aspects:
+                symbols = self._market_symbols()
+                base_request = self._comparison_request(include_split=False, strategy_names=strategy_names)
+                run_plan.append(
+                    (
+                        "Market Matrix",
+                        "market_matrix",
+                        lambda base_request=base_request, symbols=symbols: self._run_market_matrix_worker(base_request, symbols),
+                    )
+                )
+
+            if "edge" in selected_aspects:
+                request = self._edge_analysis_request(strategy_names)
+                run_plan.append(
+                    (
+                        "Edge Lab",
+                        "edge_analysis",
+                        lambda request=request: run_edge_analysis(request),
+                    )
+                )
+
+            if "analysis" in selected_aspects:
+                request = self._trade_analysis_request(self._primary_strategy_name())
+                run_plan.append(
+                    (
+                        "Trade Diagnostics",
+                        "analysis",
+                        lambda request=request: run_trade_analysis(request),
+                    )
+                )
+        except ValueError as error:
+            self._show_validation_error(error)
+            return
+
+        aspect_text = ", ".join(label for label, _kind, _worker in run_plan)
+        self._run_in_background(
+            f"Running enabled aspects: {aspect_text}...",
+            "run_bundle",
+            lambda run_plan=run_plan: self._run_aspect_bundle_worker(run_plan),
+        )
+
+    def _validate_strategies(self) -> None:
+        self._run_in_background(
+            "Validating discovered strategies...",
+            "strategy_validation",
+            lambda: validation_results_to_frame(validate_all_strategies()),
+        )
+
+    def _run_edge_analysis(self) -> None:
+        try:
+            strategy_names = self._selected_strategy_names()
+            if not strategy_names:
+                raise ValueError("Select at least one strategy to run.")
+            request = self._edge_analysis_request(strategy_names)
+        except ValueError as error:
+            self._show_validation_error(error)
+            return
+
+        self._run_in_background("Running Edge Lab...", "edge_analysis", lambda: run_edge_analysis(request))
 
     def _run_selected_strategies(self) -> None:
         try:
@@ -1058,6 +1357,24 @@ class PlutoTraderGui(tk.Tk):
             return
         self._run_in_background("Analyzing trades...", "analysis", lambda: run_trade_analysis(request))
 
+    def _run_aspect_bundle_worker(
+        self,
+        run_plan: list[tuple[str, str, Callable[[], Any]]],
+    ) -> list[TaskResult]:
+        results = []
+        for label, kind, worker in run_plan:
+            try:
+                results.append(TaskResult(kind=kind, payload=worker()))
+            except Exception as error:  # noqa: BLE001 - keep later selected aspects running.
+                details = "".join(traceback.format_exception_only(type(error), error)).strip()
+                results.append(
+                    TaskResult(
+                        kind="aspect_error",
+                        payload={"label": label, "error": details},
+                    )
+                )
+        return results
+
     def _run_regime_worker(self, base_request: StrategyComparisonRequest) -> dict[str, Any]:
         summaries = []
         comparisons: list[StrategyComparisonResult] = []
@@ -1065,6 +1382,7 @@ class PlutoTraderGui(tk.Tk):
         for period_name, start, end in REGIME_PACK:
             request = StrategyComparisonRequest(
                 strategy_names=base_request.strategy_names,
+                symbol=base_request.symbol,
                 start=start,
                 end=end,
                 initial_cash=base_request.initial_cash,
@@ -1146,6 +1464,18 @@ class PlutoTraderGui(tk.Tk):
         self.after(100, self._poll_messages)
 
     def _handle_task_result(self, task_result: TaskResult) -> None:
+        if task_result.kind == "run_bundle":
+            self._handle_run_bundle(task_result.payload)
+            return
+        if task_result.kind == "aspect_error":
+            self._handle_aspect_error(task_result.payload)
+            return
+        if task_result.kind == "strategy_validation":
+            self._handle_strategy_validation(task_result.payload)
+            return
+        if task_result.kind == "edge_analysis":
+            self._handle_edge_analysis(task_result.payload)
+            return
         if task_result.kind == "backtest":
             self._handle_backtest(task_result.payload)
             return
@@ -1163,12 +1493,89 @@ class PlutoTraderGui(tk.Tk):
             return
         self._log(f"Unknown task result type: {task_result.kind}")
 
+    def _handle_run_bundle(self, results: list[TaskResult]) -> None:
+        error_count = sum(1 for result in results if result.kind == "aspect_error")
+        for result in results:
+            self._handle_task_result(result)
+        if error_count:
+            self._log(f"Enabled run complete with {error_count} failed aspect(s).")
+            messagebox.showwarning("Pluto Trader", f"{error_count} run aspect(s) failed. Check the Run Log tab.")
+            return
+        self._log(f"Enabled run complete: {len(results)} aspect(s) finished.")
+
+    def _handle_aspect_error(self, payload: dict[str, str]) -> None:
+        self._log(f"{payload['label']} failed: {payload['error']}")
+
+    def _handle_strategy_validation(self, report: pd.DataFrame) -> None:
+        self.current_results = []
+        self.current_summary = report
+        self.current_analysis = None
+        self._clear_plot("Strategy validation complete. Run a backtest or comparison to render an equity curve.")
+        self._populate_summary(report)
+        self._clear_edge_details()
+        self._clear_diagnostics()
+        self._set_export_buttons_enabled(True)
+
+        status_counts = report["status"].value_counts().to_dict() if "status" in report.columns else {}
+        passed = int(status_counts.get("pass", 0))
+        warned = int(status_counts.get("warn", 0))
+        failed = int(status_counts.get("fail", 0))
+        total = int(len(report))
+        self.metric_vars["best"].set("Validation")
+        self.metric_vars["score"].set(f"{passed}/{total} pass")
+        self.metric_vars["return"].set(f"{failed} fail")
+        self.metric_vars["drawdown"].set(f"{warned} warn")
+        self.metric_vars["sharpe"].set("-")
+        self.metric_vars["trades"].set(str(total))
+
+        self._log(f"Strategy validation complete: {passed} passed, {warned} warnings, {failed} failed.")
+        if failed or warned:
+            for _, row in report[report["status"].isin(["fail", "warn"])].iterrows():
+                detail = row["errors"] if row["status"] == "fail" else row["warnings"]
+                self._log(f"Strategy validation {row['status']}: {row['strategy']}: {detail}")
+        if failed:
+            messagebox.showwarning("Pluto Trader", f"{failed} strategy validation check(s) failed. See the Summary and Run Log tabs.")
+        self.notebook.select(1)
+
+    def _handle_edge_analysis(self, result: EdgeAnalysisResult) -> None:
+        self.current_results = []
+        self.current_summary = result.summary
+        self.current_analysis = None
+        self._clear_plot("Edge Lab complete. Run a backtest or comparison to render a specific equity curve.")
+        self._populate_summary(result.summary)
+        self._populate_edge_details(result)
+        self._clear_diagnostics()
+        self._set_export_buttons_enabled(True)
+
+        if result.summary.empty:
+            self._update_metric_cards(pd.DataFrame())
+            self._log("Edge Lab complete: no candidate rows returned.")
+            self.notebook.select(1)
+            return
+
+        best = result.summary.sort_values("edge_score", ascending=False).iloc[0]
+        self.metric_vars["best"].set(str(best.get("strategy", "-")))
+        self.metric_vars["score"].set(_format_cell("edge_score", best.get("edge_score", "-")))
+        self.metric_vars["return"].set(_format_cell("test_excess", best.get("test_excess", "-")))
+        self.metric_vars["drawdown"].set(_format_cell("market_pass_rate", best.get("market_pass_rate", "-")))
+        self.metric_vars["sharpe"].set(_format_cell("cost_resilience", best.get("cost_resilience", "-")))
+        self.metric_vars["trades"].set(str(best.get("verdict", "-")))
+        self._log(
+            f"Edge Lab complete: best={best['strategy']} verdict={best['verdict']} "
+            f"edge_score={best['edge_score']:.1f} notes={best['notes']}."
+        )
+        rejects = int((result.summary["verdict"] == "reject").sum()) if "verdict" in result.summary.columns else 0
+        candidates = int((result.summary["verdict"] == "candidate").sum()) if "verdict" in result.summary.columns else 0
+        self._log(f"Edge Lab verdicts: {candidates} candidate(s), {rejects} reject(s).")
+        self.notebook.select(1)
+
     def _handle_backtest(self, result) -> None:
         self.current_results = [result.result]
         self.current_summary = _summary_with_score(result.summary)
         self.current_analysis = None
         self._render_plot(self.current_results)
         self._populate_summary(self.current_summary)
+        self._clear_edge_details()
         self._clear_diagnostics()
         self._update_metric_cards(self.current_summary)
         self._set_export_buttons_enabled(True)
@@ -1184,6 +1591,7 @@ class PlutoTraderGui(tk.Tk):
         self.current_analysis = None
         self._render_plot(self.current_results)
         self._populate_summary(self.current_summary)
+        self._clear_edge_details()
         self._clear_diagnostics()
         self._update_metric_cards(self.current_summary)
         self._set_export_buttons_enabled(True)
@@ -1214,6 +1622,7 @@ class PlutoTraderGui(tk.Tk):
         self.current_analysis = None
         self._clear_plot("Regime scorecard complete. Run a backtest or comparison to render a specific equity curve.")
         self._populate_summary(self.current_summary)
+        self._clear_edge_details()
         self._clear_diagnostics()
         self._update_metric_cards(self.current_summary)
         self._set_export_buttons_enabled(True)
@@ -1232,6 +1641,7 @@ class PlutoTraderGui(tk.Tk):
         self.current_analysis = None
         self._clear_plot("Market matrix complete. Select one market and run selected strategies to render an equity curve.")
         self._populate_summary(self.current_summary)
+        self._clear_edge_details()
         self._clear_diagnostics()
         self._update_metric_cards(self.current_summary)
         self._set_export_buttons_enabled(True)
@@ -1262,6 +1672,7 @@ class PlutoTraderGui(tk.Tk):
         self.current_results = [result.result]
         self._render_plot(self.current_results)
         self._populate_summary(analysis_summary)
+        self._clear_edge_details()
         self._update_metric_cards(analysis_summary)
         self._set_export_buttons_enabled(True)
         self._log(
@@ -1299,6 +1710,24 @@ class PlutoTraderGui(tk.Tk):
             transaction_cost_bps=_float_value(self.transaction_cost_var, "Transaction bps"),
             slippage_bps=_float_value(self.slippage_var, "Slippage bps"),
             split_date=_optional_text(self.split_var) if include_split else None,
+            strategy_params_by_name=self._strategy_params_by_name(strategy_names),
+        )
+
+    def _edge_analysis_request(self, strategy_names: list[str] | None = None) -> EdgeAnalysisRequest:
+        strategy_names = strategy_names if strategy_names is not None else self._selected_strategy_names()
+        if not strategy_names:
+            raise ValueError("Select at least one strategy to run.")
+
+        return EdgeAnalysisRequest(
+            strategy_names=strategy_names,
+            symbols=self._market_symbols(),
+            start=_required_text(self.start_var, "Start date"),
+            end=_optional_text(self.end_var),
+            split_date=_optional_text(self.split_var),
+            initial_cash=_float_value(self.initial_cash_var, "Initial cash"),
+            exposure=_float_value(self.exposure_var, "Exposure"),
+            transaction_cost_bps=_float_value(self.transaction_cost_var, "Transaction bps"),
+            slippage_bps=_float_value(self.slippage_var, "Slippage bps"),
             strategy_params_by_name=self._strategy_params_by_name(strategy_names),
         )
 
@@ -1634,6 +2063,16 @@ class PlutoTraderGui(tk.Tk):
         self._populate_tree(self.diagnostic_trees["whipsaws"], result.whipsaws)
         self._populate_tree(self.diagnostic_trees["suspicious_moves"], result.suspicious_moves)
 
+    def _populate_edge_details(self, result: EdgeAnalysisResult) -> None:
+        self._populate_tree(self.edge_trees["market"], result.market_details)
+        self._populate_tree(self.edge_trees["regime"], result.regime_details)
+        self._populate_tree(self.edge_trees["parameters"], result.parameter_details)
+        self._populate_tree(self.edge_trees["costs"], result.cost_details)
+
+    def _clear_edge_details(self) -> None:
+        for tree_container in self.edge_trees.values():
+            self._populate_tree(tree_container, pd.DataFrame())
+
     def _clear_diagnostics(self) -> None:
         for tree_container in self.diagnostic_trees.values():
             self._populate_tree(tree_container, pd.DataFrame())
@@ -1653,7 +2092,29 @@ class PlutoTraderGui(tk.Tk):
         tree.configure(columns=columns)
         for column in columns:
             label = SUMMARY_COLUMN_LABELS.get(column, column.replace("_", " ").title())
-            anchor = "w" if column in {"symbol", "period", "strategy", "display_name", "date"} else "e"
+            anchor = (
+                "w"
+                if column in {
+                    "symbol",
+                    "period",
+                    "strategy",
+                    "display_name",
+                    "date",
+                    "status",
+                    "editable_parameters",
+                    "checks",
+                    "warnings",
+                    "errors",
+                    "verdict",
+                    "primary_symbol",
+                    "notes",
+                    "variant",
+                    "changed_param",
+                    "param_value",
+                    "cost_case",
+                }
+                else "e"
+            )
             tree.heading(column, text=label)
             tree.column(column, width=_column_width(column), minwidth=70, anchor=anchor, stretch=True)
 
@@ -1674,6 +2135,186 @@ class PlutoTraderGui(tk.Tk):
         self.metric_vars["drawdown"].set(_format_cell("max_drawdown", best.get("max_drawdown", "-")))
         self.metric_vars["sharpe"].set(_format_cell("sharpe", best.get("sharpe", "-")))
         self.metric_vars["trades"].set(_format_cell("trades", best.get("trades", "-")))
+
+    def _save_run_preset(self) -> None:
+        RUN_PRESETS_DIR.mkdir(parents=True, exist_ok=True)
+        path = filedialog.asksaveasfilename(
+            title="Save run preset",
+            initialdir=str(RUN_PRESETS_DIR),
+            initialfile=f"pluto_preset_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            defaultextension=".json",
+            filetypes=[("JSON preset", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+
+        payload = self._run_preset_payload()
+        Path(path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        self._log(f"Saved run preset: {path}")
+
+    def _load_run_preset(self) -> None:
+        RUN_PRESETS_DIR.mkdir(parents=True, exist_ok=True)
+        path = filedialog.askopenfilename(
+            title="Load run preset",
+            initialdir=str(RUN_PRESETS_DIR),
+            filetypes=[("JSON preset", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+
+        try:
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+            self._apply_run_preset(payload)
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            self._show_validation_error(ValueError(f"Could not load preset: {error}"))
+            return
+
+        self._render_strategy_param_fields()
+        self._log(f"Loaded run preset: {path}")
+
+    def _run_preset_payload(self) -> dict[str, Any]:
+        return {
+            "version": RUN_PRESET_VERSION,
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "primary_strategy": self.strategy_var.get(),
+            "strategy_checks": {
+                strategy_name: bool(variable.get())
+                for strategy_name, variable in self.strategy_checks.items()
+            },
+            "selected_strategies": self._selected_strategy_names(),
+            "market_symbols": self.market_var.get(),
+            "run_aspects": {
+                aspect: bool(variable.get())
+                for aspect, variable in self.run_aspect_vars.items()
+            },
+            "dates": {
+                "preset": self.preset_var.get(),
+                "start": self.start_var.get(),
+                "end": self.end_var.get(),
+                "split": self.split_var.get(),
+            },
+            "model_inputs": {
+                "initial_cash": self.initial_cash_var.get(),
+                "exposure": self.exposure_var.get(),
+                "transaction_cost_bps": self.transaction_cost_var.get(),
+                "slippage_bps": self.slippage_var.get(),
+            },
+            "diagnostics": {
+                "top_days": self.top_days_var.get(),
+                "short_trade_days": self.short_trade_days_var.get(),
+                "suspicious_move_threshold": self.suspicious_move_var.get(),
+            },
+            "strategy_params": {
+                strategy_name: {
+                    param_name: variable.get()
+                    for param_name, variable in param_vars.items()
+                }
+                for strategy_name, param_vars in self.strategy_param_vars.items()
+            },
+        }
+
+    def _apply_run_preset(self, payload: dict[str, Any]) -> None:
+        if not isinstance(payload, dict):
+            raise ValueError("Preset must contain a JSON object.")
+
+        ignored_items: list[str] = []
+        version = payload.get("version")
+        if version not in {None, RUN_PRESET_VERSION}:
+            ignored_items.append(f"version {version}")
+
+        strategy_checks = payload.get("strategy_checks")
+        if isinstance(strategy_checks, dict):
+            for strategy_name, variable in self.strategy_checks.items():
+                variable.set(bool(strategy_checks.get(strategy_name, False)))
+            ignored_items.extend(
+                f"strategy {strategy_name}"
+                for strategy_name in sorted(set(strategy_checks) - set(self.strategy_checks))
+            )
+        else:
+            selected_strategies = payload.get("selected_strategies", [])
+            if isinstance(selected_strategies, list):
+                selected_set = {str(strategy_name) for strategy_name in selected_strategies}
+                for strategy_name, variable in self.strategy_checks.items():
+                    variable.set(strategy_name in selected_set)
+                ignored_items.extend(
+                    f"strategy {strategy_name}"
+                    for strategy_name in sorted(selected_set - set(self.strategy_checks))
+                )
+
+        primary_strategy = payload.get("primary_strategy")
+        if isinstance(primary_strategy, str) and primary_strategy in self.strategy_names:
+            self.strategy_var.set(primary_strategy)
+        else:
+            self._sync_primary_strategy_from_checks()
+            if primary_strategy:
+                ignored_items.append(f"primary strategy {primary_strategy}")
+
+        market_symbols = payload.get("market_symbols")
+        if isinstance(market_symbols, str):
+            self.market_var.set(market_symbols)
+
+        run_aspects = payload.get("run_aspects")
+        if isinstance(run_aspects, dict):
+            for aspect, variable in self.run_aspect_vars.items():
+                if aspect in run_aspects:
+                    variable.set(bool(run_aspects[aspect]))
+            ignored_items.extend(
+                f"run aspect {aspect}"
+                for aspect in sorted(set(run_aspects) - set(self.run_aspect_vars))
+            )
+
+        self._apply_string_fields(
+            payload.get("dates"),
+            {
+                "preset": self.preset_var,
+                "start": self.start_var,
+                "end": self.end_var,
+                "split": self.split_var,
+            },
+        )
+        self._apply_string_fields(
+            payload.get("model_inputs"),
+            {
+                "initial_cash": self.initial_cash_var,
+                "exposure": self.exposure_var,
+                "transaction_cost_bps": self.transaction_cost_var,
+                "slippage_bps": self.slippage_var,
+            },
+        )
+        self._apply_string_fields(
+            payload.get("diagnostics"),
+            {
+                "top_days": self.top_days_var,
+                "short_trade_days": self.short_trade_days_var,
+                "suspicious_move_threshold": self.suspicious_move_var,
+            },
+        )
+
+        strategy_params = payload.get("strategy_params")
+        if isinstance(strategy_params, dict):
+            for strategy_name, params in strategy_params.items():
+                if strategy_name not in self.strategy_param_vars:
+                    ignored_items.append(f"params for {strategy_name}")
+                    continue
+                if not isinstance(params, dict):
+                    ignored_items.append(f"params for {strategy_name}")
+                    continue
+                param_vars = self.strategy_param_vars[strategy_name]
+                for param_name, value in params.items():
+                    if param_name in param_vars:
+                        param_vars[param_name].set(str(value))
+                    else:
+                        ignored_items.append(f"param {strategy_name}.{param_name}")
+
+        if ignored_items:
+            self._log("Preset ignored unavailable items: " + ", ".join(ignored_items))
+
+    def _apply_string_fields(self, payload: Any, variables: dict[str, tk.StringVar]) -> None:
+        if not isinstance(payload, dict):
+            return
+        for key, variable in variables.items():
+            if key in payload and payload[key] is not None:
+                variable.set(str(payload[key]))
 
     def _save_plot(self) -> None:
         if self.current_figure is None:
@@ -1879,7 +2520,7 @@ def _format_cell(column: str, value: Any) -> str:
     if column in INTEGER_COLUMNS:
         return f"{int(float(value))}"
 
-    if column == "score":
+    if column in {"score", "edge_score"}:
         return f"{float(value):.1f}"
 
     if column == "sharpe":
@@ -1891,7 +2532,7 @@ def _format_cell(column: str, value: Any) -> str:
     return str(value)
 
 
-def _format_param_value(value: int | float) -> str:
+def _format_param_value(value: Any) -> str:
     if isinstance(value, float):
         return f"{value:g}"
     return str(value)
@@ -1911,8 +2552,31 @@ def _column_width(column: str) -> int:
     widths = {
         "period": 150,
         "symbol": 90,
+        "status": 80,
+        "verdict": 90,
+        "primary_symbol": 90,
         "display_name": 220,
         "strategy": 150,
+        "edge_score": 90,
+        "full_excess": 110,
+        "train_excess": 110,
+        "test_excess": 110,
+        "test_sharpe": 100,
+        "test_max_drawdown": 120,
+        "market_pass_rate": 110,
+        "regime_pass_rate": 110,
+        "cost_resilience": 120,
+        "stressed_excess": 120,
+        "parameter_stability": 120,
+        "notes": 340,
+        "variant": 200,
+        "changed_param": 140,
+        "param_value": 120,
+        "cost_case": 110,
+        "editable_parameters": 220,
+        "checks": 180,
+        "warnings": 320,
+        "errors": 380,
         "score": 80,
         "final_value": 120,
         "date": 110,

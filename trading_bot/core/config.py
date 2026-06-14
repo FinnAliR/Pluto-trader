@@ -169,44 +169,13 @@ def _normalize_timeframe(value: str) -> str:
 
 
 def _normalize_strategy_name(value: str) -> str:
-    normalized = value.strip().lower().replace("-", "_")
-    aliases = {
-        "ma": "ma_crossover",
-        "moving_average": "ma_crossover",
-        "ma_crossover": "ma_crossover",
-        "rsi": "rsi",
-        "breakout": "breakout",
-        "buy_hold": "buy_and_hold",
-        "buy_and_hold": "buy_and_hold",
-        "candle": "candle_pattern_jpy_session",
-        "candle_pattern": "candle_pattern_jpy_session",
-        "candle_pattern_jpy": "candle_pattern_jpy_session",
-        "candle_pattern_jpy_session": "candle_pattern_jpy_session",
-        "jpy_session": "candle_pattern_jpy_session",
-        "core": "core_tactical_ma",
-        "core_tactical": "core_tactical_ma",
-        "core_tactical_ma": "core_tactical_ma",
-        "rebound": "rebound_reentry_ma",
-        "rebound_ma": "rebound_reentry_ma",
-        "rebound_reentry": "rebound_reentry_ma",
-        "rebound_reentry_ma": "rebound_reentry_ma",
-    }
+    from trading_bot.strategies.registry import available_strategy_names, normalize_strategy_name
 
-    if normalized not in aliases:
-        allowed = ", ".join(
-            [
-                "ma_crossover",
-                "core_tactical_ma",
-                "rebound_reentry_ma",
-                "rsi",
-                "breakout",
-                "candle_pattern_jpy_session",
-                "buy_and_hold",
-            ]
-        )
-        raise SettingsError(f"STRATEGY must be one of: {allowed}.")
-
-    return aliases[normalized]
+    try:
+        return normalize_strategy_name(value)
+    except ValueError as error:
+        allowed = ", ".join(available_strategy_names())
+        raise SettingsError(f"STRATEGY must be one of: {allowed}.") from error
 
 
 def _validate_settings(settings: Settings) -> None:

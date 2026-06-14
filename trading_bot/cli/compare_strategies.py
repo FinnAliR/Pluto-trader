@@ -96,15 +96,13 @@ def main() -> int:
 
 
 def parse_args() -> argparse.Namespace:
+    available_strategies = ", ".join(available_strategy_names())
     parser = argparse.ArgumentParser(description="Compare multiple strategies using Alpaca daily historical data.")
     parser.add_argument(
         "--strategies",
         nargs="+",
         default=available_strategy_names(),
-        help=(
-            "Strategies to compare. Choices: ma_crossover core_tactical_ma rebound_reentry_ma "
-            "rsi breakout candle_pattern_jpy_session buy_and_hold."
-        ),
+        help=f"Strategies to compare. Auto-discovered strategies now available: {available_strategies}.",
     )
     parser.add_argument(
         "--symbol",

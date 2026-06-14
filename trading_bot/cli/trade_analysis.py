@@ -24,6 +24,7 @@ from trading_bot.services.trade_analysis_service import (
     TradeAnalysisRequest,
     run_trade_analysis,
 )
+from trading_bot.strategies.registry import available_strategy_names
 from trading_bot.diagnostics.reports import AnalysisFiles, save_reports
 
 
@@ -150,14 +151,12 @@ def print_top_table(title: str, frame: pd.DataFrame) -> None:
 
 
 def parse_args() -> argparse.Namespace:
+    available_strategies = ", ".join(available_strategy_names())
     parser = argparse.ArgumentParser(description="Analyze trades, missed rallies, and whipsaws for one strategy.")
     parser.add_argument(
         "--strategy",
         default=os.getenv("STRATEGY", "ma_crossover"),
-        help=(
-            "Strategy to analyze: ma_crossover, core_tactical_ma, rebound_reentry_ma, "
-            "rsi, breakout, candle_pattern_jpy_session, buy_and_hold."
-        ),
+        help=f"Strategy to analyze. Auto-discovered strategies now available: {available_strategies}.",
     )
     parser.add_argument(
         "--symbol",
