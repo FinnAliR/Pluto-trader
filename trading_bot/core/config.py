@@ -15,6 +15,8 @@ class SettingsError(ValueError):
 
 TRUE_VALUES = {"1", "true", "yes", "y", "on"}
 BOT_DIR = Path(__file__).resolve().parents[1]
+EXECUTION_MODE_ALPACA_PAPER = "alpaca_paper"
+EXECUTION_MODE_LIVE_PAPER = "live_paper"
 
 
 @dataclass(frozen=True)
@@ -24,6 +26,7 @@ class Settings:
     api_key: str
     secret_key: str
     paper_trading: bool
+    execution_mode: str
     symbol: str
     strategy_name: str
     timeframe: str
@@ -44,6 +47,8 @@ class Settings:
     max_position_size_fraction: float
     trial_mode: bool
     trial_max_notional: float
+    live_paper_initial_cash: float
+    live_paper_state_path: Path
     lookback_days: int
     min_order_notional: float
     client_order_id_prefix: str
@@ -78,6 +83,7 @@ def load_settings() -> Settings:
         api_key=api_key,
         secret_key=secret_key,
         paper_trading=True,
+        execution_mode=_normalize_execution_mode(os.getenv("EXECUTION_MODE", EXECUTION_MODE_ALPACA_PAPER)),
         symbol=os.getenv("SYMBOL", "SPY").strip().upper(),
         strategy_name=_normalize_strategy_name(os.getenv("STRATEGY", "ma_crossover")),
         timeframe=_normalize_timeframe(os.getenv("TIMEFRAME", "1Day")),
@@ -98,6 +104,8 @@ def load_settings() -> Settings:
         max_position_size_fraction=_float_env("MAX_POSITION_SIZE_FRACTION", 0.25),
         trial_mode=_bool_env("TRIAL_MODE", False),
         trial_max_notional=_float_env("TRIAL_MAX_NOTIONAL", 25.00),
+        live_paper_initial_cash=_float_env("LIVE_PAPER_INITIAL_CASH", 10_000.00),
+        live_paper_state_path=_path_env("LIVE_PAPER_STATE_PATH", bot_dir / "live_paper_state.json", bot_dir),
         lookback_days=_int_env("LOOKBACK_DAYS", 220),
         min_order_notional=_float_env("MIN_ORDER_NOTIONAL", 1.00),
         client_order_id_prefix=os.getenv("CLIENT_ORDER_ID_PREFIX", "pluto-mac").strip(),
@@ -178,6 +186,26 @@ def _normalize_strategy_name(value: str) -> str:
         raise SettingsError(f"STRATEGY must be one of: {allowed}.") from error
 
 
+def _normalize_execution_mode(value: str) -> str:
+    normalized = value.strip().lower().replace("-", "_")
+    aliases = {
+        "alpaca": EXECUTION_MODE_ALPACA_PAPER,
+        "paper": EXECUTION_MODE_ALPACA_PAPER,
+        "paper_alpaca": EXECUTION_MODE_ALPACA_PAPER,
+        "alpaca_paper": EXECUTION_MODE_ALPACA_PAPER,
+        "broker_paper": EXECUTION_MODE_ALPACA_PAPER,
+        "live_paper": EXECUTION_MODE_LIVE_PAPER,
+        "local_paper": EXECUTION_MODE_LIVE_PAPER,
+        "sim": EXECUTION_MODE_LIVE_PAPER,
+        "simulated": EXECUTION_MODE_LIVE_PAPER,
+        "simulation": EXECUTION_MODE_LIVE_PAPER,
+    }
+    try:
+        return aliases[normalized]
+    except KeyError as error:
+        raise SettingsError("EXECUTION_MODE must be alpaca_paper or live_paper.") from error
+
+
 def _validate_settings(settings: Settings) -> None:
     if settings.symbol != "SPY":
         raise SettingsError("This beginner bot is locked to SYMBOL=SPY.")
@@ -217,6 +245,9 @@ def _validate_settings(settings: Settings) -> None:
 
     if settings.trial_max_notional <= 0:
         raise SettingsError("TRIAL_MAX_NOTIONAL must be greater than 0.")
+
+    if settings.live_paper_initial_cash <= 0:
+        raise SettingsError("LIVE_PAPER_INITIAL_CASH must be greater than 0.")
 
     if settings.lookback_days < 60:
         raise SettingsError("LOOKBACK_DAYS must be at least 60 for the 50-period average.")

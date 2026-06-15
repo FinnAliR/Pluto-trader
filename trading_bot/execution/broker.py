@@ -1,4 +1,4 @@
-"""Alpaca paper-trading broker wrapper."""
+"""Broker wrappers for safe paper execution."""
 
 from __future__ import annotations
 
@@ -20,6 +20,16 @@ NEW_YORK_TIME = ZoneInfo("America/New_York")
 
 class BrokerError(RuntimeError):
     """Raised when Alpaca trading API calls fail."""
+
+
+def create_broker(settings: Settings, logger: Logger):
+    """Create the configured paper-execution broker."""
+    if settings.execution_mode == "live_paper":
+        from trading_bot.execution.live_paper import LivePaperBroker
+
+        return LivePaperBroker(settings=settings, logger=logger)
+
+    return AlpacaBroker(settings=settings, logger=logger)
 
 
 class AlpacaBroker:
