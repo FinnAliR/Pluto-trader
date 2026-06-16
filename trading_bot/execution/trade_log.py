@@ -19,6 +19,7 @@ FIELD_NAMES = [
     "symbol",
     "action",
     "status",
+    "execution_mode",
     "decision_reason",
     "risk_reason",
     "order_id",
@@ -44,6 +45,7 @@ class TradeLogEntry:
     symbol: str
     decision: StrategyDecision
     status: str
+    execution_mode: str = ""
     risk_reason: str = ""
     order_id: str = ""
     order_status: str = ""
@@ -69,7 +71,7 @@ class TradeLogger:
         with self.path.open("r", newline="", encoding="utf-8") as csv_file:
             reader = csv.DictReader(csv_file)
             for row in reader:
-                if row.get("market_date") == today and row.get("status") == "SUBMITTED":
+                if row.get("market_date") == today and row.get("status") in {"SUBMITTED", "FILLED"}:
                     count += 1
 
         return count
@@ -84,6 +86,7 @@ class TradeLogger:
             "symbol": entry.symbol,
             "action": entry.decision.action.value,
             "status": entry.status,
+            "execution_mode": entry.execution_mode,
             "decision_reason": entry.decision.reason,
             "risk_reason": entry.risk_reason,
             "order_id": entry.order_id,

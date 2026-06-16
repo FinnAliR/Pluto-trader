@@ -8,7 +8,7 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
-from trading_bot.execution.broker import AlpacaBroker, BrokerError
+from trading_bot.execution.broker import BrokerError, create_broker
 from trading_bot.core.config import SettingsError, load_settings
 from trading_bot.market_data.client import MarketDataError, create_data_client, get_price_data
 from trading_bot.core.logger import setup_logger
@@ -39,6 +39,7 @@ def main() -> int:
 
     print_pass("PAPER_TRADING=true is set")
     print_pass("ALPACA_PAPER=true is set")
+    print_pass(f"Execution mode: {settings.execution_mode}")
     print_pass(f"Symbol locked to {settings.symbol}")
 
     try:
@@ -53,7 +54,7 @@ def main() -> int:
     else:
         print_warn("TRIAL_MODE is OFF. Consider turning it on for the first paper run.")
 
-    broker = AlpacaBroker(settings=settings, logger=logger)
+    broker = create_broker(settings=settings, logger=logger)
     data_client = create_data_client(settings=settings)
     trade_logger = TradeLogger(settings.trades_csv_path)
 
@@ -65,7 +66,7 @@ def main() -> int:
             print_warn("Alpaca market clock is reachable: market is closed")
 
         account = broker.get_account()
-        print_pass(f"Alpaca account reachable. Status={account.status}")
+        print_pass(f"Paper account reachable. Status={account.status}")
 
         position_qty = broker.get_position_qty(settings.symbol)
         print_pass(f"Current {settings.symbol} position quantity: {position_qty:.6f}")
@@ -78,7 +79,7 @@ def main() -> int:
             print_pass(f"No open {settings.symbol} orders found")
 
     except BrokerError as error:
-        print_fail(f"Alpaca trading API check failed: {error}")
+        print_fail(f"Paper broker check failed: {error}")
         return 1
 
     try:
@@ -92,6 +93,15 @@ def main() -> int:
         failures += 1
     else:
         latest_close = Decimal(str(price_data["close"].dropna().iloc[-1]))
+        try:
+            mark_to_market = getattr(broker, "mark_to_market", None)
+            if callable(mark_to_market):
+                mark_to_market(float(latest_close))
+                account = broker.get_account()
+        except BrokerError as error:
+            print_fail(f"Live-paper mark-to-market failed: {error}")
+            return 1
+
         print_pass(f"SPY price data available. Latest close=${latest_close:.2f}")
 
         equity = Decimal(str(account.equity))
@@ -112,22 +122,22 @@ def main() -> int:
 
     local_trades_today = trade_logger.count_submitted_trades_today()
     try:
-        alpaca_orders_today = broker.count_orders_submitted_today(settings.symbol)
+        broker_orders_today = broker.count_orders_submitted_today(settings.symbol)
     except BrokerError as error:
-        print_fail(f"Alpaca order-history check failed: {error}")
+        print_fail(f"Broker order-history check failed: {error}")
         return 1
 
-    trades_today = max(local_trades_today, alpaca_orders_today)
+    trades_today = max(local_trades_today, broker_orders_today)
     if trades_today >= settings.max_daily_trades:
         print_fail(
             f"Daily trade limit reached: effective={trades_today}/{settings.max_daily_trades} "
-            f"(local_csv={local_trades_today}, alpaca={alpaca_orders_today})"
+            f"(local_csv={local_trades_today}, broker={broker_orders_today})"
         )
         failures += 1
     else:
         print_pass(
             f"Daily trade limit available: effective={trades_today}/{settings.max_daily_trades} "
-            f"(local_csv={local_trades_today}, alpaca={alpaca_orders_today})"
+            f"(local_csv={local_trades_today}, broker={broker_orders_today})"
         )
 
     print()

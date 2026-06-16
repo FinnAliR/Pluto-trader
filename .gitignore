@@ -18,3 +18,4 @@ trading_bot/trade_analysis_*.csv
 
 # Local trading audit log
 trading_bot/trades.csv
+trading_bot/live_paper_state.json

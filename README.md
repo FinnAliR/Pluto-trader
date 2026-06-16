@@ -31,6 +31,30 @@ python trading_bot\main.py
 4. Optionally open the data-only GUI with `python trading_bot\gui.py`.
 5. Run one paper-trading decision with `python trading_bot\main.py`.
 
+## Execution Modes
+
+Set `EXECUTION_MODE` in `trading_bot\.env`.
+
+- `alpaca_paper` is the default. It submits orders to Alpaca's paper-trading environment.
+- `live_paper` simulates fills locally against live Alpaca market data and does not submit Alpaca orders.
+
+For local live-paper tracking:
+
+```text
+EXECUTION_MODE=live_paper
+LIVE_PAPER_INITIAL_CASH=10000
+LIVE_PAPER_STATE_PATH=live_paper_state.json
+```
+
+Then run:
+
+```powershell
+python trading_bot\preflight.py
+python trading_bot\main.py
+```
+
+`live_paper` stores simulated cash, position quantity, latest mark price, and fills in `trading_bot\live_paper_state.json` by default. The bot still runs one decision cycle per invocation; schedule `main.py` if you want continuous paper tracking.
+
 Backtest plots are saved as PNG files by default. Add `--show` if you want a chart window to open.
 
 ## GUI
@@ -122,7 +146,8 @@ The output table includes `edge_score`, `verdict`, `test_excess`, `market_pass_r
 
 ## Safety Defaults
 
-- The broker is hard-coded to Alpaca paper trading.
+- `EXECUTION_MODE=alpaca_paper` is hard-coded to Alpaca paper trading.
+- `EXECUTION_MODE=live_paper` uses a local simulated account and never submits Alpaca orders.
 - The bot refuses to run unless `PAPER_TRADING=True` and `ALPACA_PAPER=True`.
 - The symbol is locked to `SPY`.
 - GUI/CLI backtests can override the historical-data symbol for research, but live/paper execution remains locked to the configured `SPY` safety check.

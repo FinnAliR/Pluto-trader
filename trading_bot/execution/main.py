@@ -1,4 +1,4 @@
-"""Entry point for the Alpaca paper trading bot."""
+"""Entry point for paper execution modes."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import sys
 from dataclasses import replace
 from decimal import Decimal
 
-from trading_bot.execution.broker import AlpacaBroker, BrokerError
-from trading_bot.core.config import SettingsError, load_settings
+from trading_bot.core.config import EXECUTION_MODE_LIVE_PAPER, SettingsError, load_settings
+from trading_bot.execution.broker import BrokerError, create_broker
 from trading_bot.market_data.client import MarketDataError, create_data_client, get_price_data
 from trading_bot.core.logger import setup_logger
 from trading_bot.execution.risk import RiskManager
@@ -33,8 +33,12 @@ def run_bot() -> int:
     logger = setup_logger(settings.log_level)
     strategy = create_strategy(settings.strategy_name, settings=settings)
 
-    logger.info("Starting SPY paper trading bot.")
-    logger.info("Safety check: paper trading is hard-coded ON. Live trading is not supported.")
+    logger.info("Starting %s paper execution bot in %s mode.", settings.symbol, settings.execution_mode)
+    if settings.execution_mode == EXECUTION_MODE_LIVE_PAPER:
+        logger.warning("LIVE PAPER MODE is ON: fills are simulated locally; Alpaca orders will not be submitted.")
+        logger.info("Live-paper state file: %s", settings.live_paper_state_path)
+    else:
+        logger.info("Safety check: Alpaca broker is hard-coded to paper=True. Live trading is not supported.")
     logger.info("Configured symbol=%s timeframe=%s strategy=%s", settings.symbol, settings.timeframe, strategy.display_name)
     logger.info(
         "Configured risk limits: max_daily_trades=%d max_position_size=%.0f%% of equity",
@@ -44,7 +48,7 @@ def run_bot() -> int:
     if settings.trial_mode:
         logger.warning("TRIAL MODE is ON: buy orders are capped at $%.2f.", settings.trial_max_notional)
 
-    broker = AlpacaBroker(settings=settings, logger=logger)
+    broker = create_broker(settings=settings, logger=logger)
     data_client = create_data_client(settings=settings)
     risk_manager = RiskManager(settings=settings, logger=logger)
     trade_logger = TradeLogger(settings.trades_csv_path)
@@ -59,7 +63,7 @@ def run_bot() -> int:
         owns_position = position_qty > 0
         has_open_order = broker.has_open_order(settings.symbol)
     except BrokerError as error:
-        logger.error("Alpaca trading API error: %s", error)
+        logger.error("Paper broker error: %s", error)
         return 1
 
     logger.info("Current SPY position quantity: %.6f", position_qty)
@@ -73,6 +77,16 @@ def run_bot() -> int:
         )
     except MarketDataError as error:
         logger.error("Alpaca market data API error: %s", error)
+        return 1
+
+    try:
+        if mark_broker_to_market_if_supported(
+            broker=broker,
+            latest_close=latest_close_from_price_data(price_data),
+        ):
+            account = broker.get_account()
+    except BrokerError as error:
+        logger.error("Broker mark-to-market failed: %s", error)
         return 1
 
     decision = strategy.make_decision(
@@ -96,16 +110,16 @@ def run_bot() -> int:
 
     local_trades_today = trade_logger.count_submitted_trades_today()
     try:
-        alpaca_orders_today = broker.count_orders_submitted_today(settings.symbol)
+        broker_orders_today = broker.count_orders_submitted_today(settings.symbol)
     except BrokerError as error:
-        logger.error("Alpaca order-history check failed: %s", error)
+        logger.error("Broker order-history check failed: %s", error)
         return 1
 
-    submitted_trades_today = max(local_trades_today, alpaca_orders_today)
+    submitted_trades_today = max(local_trades_today, broker_orders_today)
     logger.info(
-        "Submitted trades today: local_csv=%d alpaca=%d effective=%d/%d",
+        "Submitted trades today: local_csv=%d broker=%d effective=%d/%d",
         local_trades_today,
-        alpaca_orders_today,
+        broker_orders_today,
         submitted_trades_today,
         settings.max_daily_trades,
     )
@@ -124,6 +138,7 @@ def run_bot() -> int:
             TradeLogEntry(
                 symbol=settings.symbol,
                 decision=decision,
+                execution_mode=settings.execution_mode,
                 status="BLOCKED",
                 risk_reason=risk_result.reason,
                 position_qty_before=position_qty,
@@ -142,7 +157,8 @@ def run_bot() -> int:
                 TradeLogEntry(
                     symbol=settings.symbol,
                     decision=decision,
-                    status="SUBMITTED",
+                    execution_mode=settings.execution_mode,
+                    status=order_trade_log_status(settings.execution_mode),
                     risk_reason=risk_result.reason,
                     order_id=str(order.id),
                     order_status=str(order.status),
@@ -163,7 +179,8 @@ def run_bot() -> int:
                 TradeLogEntry(
                     symbol=settings.symbol,
                     decision=decision,
-                    status="SUBMITTED",
+                    execution_mode=settings.execution_mode,
+                    status=order_trade_log_status(settings.execution_mode),
                     risk_reason=risk_result.reason,
                     order_id=str(order.id),
                     order_status=str(order.status),
@@ -174,11 +191,12 @@ def run_bot() -> int:
             )
             return 0
     except BrokerError as error:
-        logger.error("Alpaca order submission failed: %s", error)
+        logger.error("Paper order submission failed: %s", error)
         trade_logger.record(
             TradeLogEntry(
                 symbol=settings.symbol,
                 decision=decision,
+                execution_mode=settings.execution_mode,
                 status="FAILED",
                 risk_reason=risk_result.reason,
                 client_order_id=risk_result.client_order_id,
@@ -192,6 +210,38 @@ def run_bot() -> int:
 
     logger.info("Decision: unsupported action %s, so no order was placed.", decision.action.value)
     return 0
+
+
+def latest_close_from_price_data(price_data) -> float | None:
+    """Return the latest valid close from a price dataframe."""
+    if price_data is None or price_data.empty or "close" not in price_data.columns:
+        return None
+
+    close_prices = price_data["close"].dropna()
+    if close_prices.empty:
+        return None
+
+    return float(close_prices.iloc[-1])
+
+
+def mark_broker_to_market_if_supported(broker, latest_close: float | None) -> bool:
+    """Mark local simulated brokers to market before risk sizing."""
+    mark_to_market = getattr(broker, "mark_to_market", None)
+    if not callable(mark_to_market):
+        return False
+
+    if latest_close is None or latest_close <= 0:
+        return False
+
+    mark_to_market(latest_close)
+    return True
+
+
+def order_trade_log_status(execution_mode: str) -> str:
+    """Use FILLED for local simulations and SUBMITTED for broker-backed paper orders."""
+    if execution_mode == EXECUTION_MODE_LIVE_PAPER:
+        return "FILLED"
+    return "SUBMITTED"
 
 
 def resolve_target_rebalance_decision(

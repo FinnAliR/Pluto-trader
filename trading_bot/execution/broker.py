@@ -19,7 +19,7 @@ NEW_YORK_TIME = ZoneInfo("America/New_York")
 
 
 class BrokerError(RuntimeError):
-    """Raised when Alpaca trading API calls fail."""
+    """Raised when a paper broker operation fails."""
 
 
 def create_broker(settings: Settings, logger: Logger):
