@@ -1,6 +1,6 @@
 # Pluto Trader
 
-Alpaca paper-trading bot for SPY. Live trading is not enabled.
+Alpaca trading bot.
 
 ## Quick Start
 
