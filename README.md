@@ -53,6 +53,7 @@ python trading_bot\preflight.py
 python trading_bot\main.py
 ```
 
+
 `live_paper` stores simulated cash, position quantity, latest mark price, and fills in `trading_bot\live_paper_state.json` by default. The bot still runs one decision cycle per invocation; schedule `main.py` if you want continuous paper tracking.
 
 Backtest plots are saved as PNG files by default. Add `--show` if you want a chart window to open.
