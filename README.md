@@ -1,4 +1,4 @@
-# Pluto Trader
+# Pluto Trader 
 
 Alpaca trading bot.
 
